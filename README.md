@@ -29,7 +29,9 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 │   └── secrets.toml.example
 └── database/
     ├── productos_mongodb_seed.json
-    └── supabase_schema.sql
+    ├── supabase_schema.sql
+    ├── supabase_rls_policies.sql
+    └── supabase_auth_schema.sql
 ```
 
 ## Instalacion
@@ -57,6 +59,31 @@ key = "TU_SUPABASE_ANON_O_PUBLISHABLE_KEY"
 
 Para una version 1 segura, usa una key anon/public/publishable con politicas RLS.
 No subas `.streamlit/secrets.toml` a GitHub y evita usar una secret/service key en apps publicas.
+
+## Configurar autenticacion
+
+La app usa Supabase Auth para login con correo y contrasena.
+
+1. En Supabase, entra a `Authentication > Providers`.
+2. Activa el proveedor `Email`.
+3. Para pruebas academicas, puedes desactivar la confirmacion obligatoria de correo.
+4. En `SQL Editor`, ejecuta:
+
+```text
+database/supabase_auth_schema.sql
+```
+
+5. Crea una cuenta desde la app.
+6. Para convertir esa cuenta en administrador, ejecuta en Supabase:
+
+```sql
+update perfiles
+set rol = 'admin'
+where email = 'admin@correo.com';
+```
+
+Los usuarios nuevos se crean como `cliente`. El admin puede ver el panel administrativo,
+dashboard y configuracion; el cliente puede comprar y consultar sus pedidos.
 
 ## Configurar MongoDB
 

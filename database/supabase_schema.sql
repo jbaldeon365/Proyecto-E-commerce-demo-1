@@ -25,6 +25,21 @@ create extension if not exists "pgcrypto";
 -- drop table if exists detalle_pedidos;
 -- drop table if exists pedidos;
 -- drop table if exists clientes;
+-- drop table if exists perfiles;
+
+-- ============================================================
+-- Tabla: perfiles
+-- Complementa Supabase Auth con datos de rol para la app.
+-- El usuario y contrasena se gestionan en auth.users.
+-- ============================================================
+
+create table if not exists perfiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  nombre text not null,
+  email text not null,
+  rol text not null default 'cliente' check (rol in ('cliente', 'admin')),
+  created_at timestamptz not null default now()
+);
 
 -- ============================================================
 -- Tabla: clientes
@@ -81,6 +96,7 @@ create table if not exists detalle_pedidos (
 create index if not exists idx_pedidos_codigo on pedidos (codigo);
 create index if not exists idx_pedidos_estado on pedidos (estado);
 create index if not exists idx_detalle_pedido_id on detalle_pedidos (pedido_id);
+create index if not exists idx_perfiles_rol on perfiles (rol);
 
 -- ============================================================
 -- Permisos para usar Supabase desde Streamlit con anon/public key
@@ -90,13 +106,30 @@ create index if not exists idx_detalle_pedido_id on detalle_pedidos (pedido_id);
 -- reemplazar estas politicas por autenticacion de usuarios y roles.
 
 grant usage on schema public to anon, authenticated;
+revoke update on perfiles from anon, authenticated;
+grant select, insert on perfiles to authenticated;
 grant select, insert, update on clientes to anon, authenticated;
 grant select, insert, update on pedidos to anon, authenticated;
 grant select, insert, update on detalle_pedidos to anon, authenticated;
 
+alter table perfiles enable row level security;
 alter table clientes enable row level security;
 alter table pedidos enable row level security;
 alter table detalle_pedidos enable row level security;
+
+drop policy if exists "perfiles_select_demo" on perfiles;
+drop policy if exists "perfiles_insert_demo" on perfiles;
+drop policy if exists "perfiles_update_demo" on perfiles;
+
+create policy "perfiles_select_demo"
+on perfiles for select
+to authenticated
+using (auth.uid() = id);
+
+create policy "perfiles_insert_demo"
+on perfiles for insert
+to authenticated
+with check (auth.uid() = id and rol = 'cliente');
 
 drop policy if exists "clientes_select_demo" on clientes;
 drop policy if exists "clientes_insert_demo" on clientes;

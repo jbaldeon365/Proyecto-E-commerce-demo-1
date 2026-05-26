@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover
     MongoClient = None
 
 ESTADOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
+ROLES = ["cliente", "admin"]
 
 PRODUCTOS_DEMO = [
     {
@@ -161,9 +162,10 @@ def render_security_notices() -> None:
 
 def supabase_headers(prefer_return: bool = False) -> dict[str, str]:
     _, key = get_supabase_config()
+    token = st.session_state.get("access_token") or key
     headers = {
         "apikey": key,
-        "Authorization": f"Bearer {key}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
     if prefer_return:
@@ -201,9 +203,32 @@ def supabase_request(
     return response.json()
 
 
+def supabase_auth_request(endpoint: str, payload: dict) -> dict:
+    url, key = get_supabase_config()
+    response = requests.post(
+        f"{url}/auth/v1/{endpoint}",
+        headers={
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=12,
+    )
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = response.text[:300] if response.text else str(exc)
+        raise RuntimeError(f"Supabase Auth rechazo la solicitud. Detalle: {detail}") from exc
+    return response.json()
+
+
 def init_state() -> None:
     st.session_state.setdefault("cart", {})
     st.session_state.setdefault("demo_orders", [])
+    st.session_state.setdefault("access_token", "")
+    st.session_state.setdefault("current_user", None)
+    st.session_state.setdefault("current_profile", None)
 
 
 def money(value: float) -> str:
@@ -216,6 +241,79 @@ def product_id(producto: dict) -> str:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def current_profile() -> dict:
+    return st.session_state.get("current_profile") or {}
+
+
+def current_role() -> str:
+    return current_profile().get("rol", "cliente")
+
+
+def is_authenticated() -> bool:
+    return bool(st.session_state.get("access_token") and st.session_state.get("current_user"))
+
+
+def load_profile(user: dict) -> dict | None:
+    user_id = user.get("id")
+    if not user_id:
+        return None
+    perfiles = supabase_request(
+        "GET",
+        "perfiles",
+        params={"select": "*", "id": f"eq.{user_id}", "limit": "1"},
+    )
+    return perfiles[0] if perfiles else None
+
+
+def create_profile(user: dict, nombre: str, rol: str = "cliente") -> dict:
+    profile = {
+        "id": user["id"],
+        "nombre": nombre,
+        "email": user["email"],
+        "rol": rol if rol in ROLES else "cliente",
+    }
+    result = supabase_request("POST", "perfiles", payload=profile, prefer_return=True)
+    return result[0]
+
+
+def login_user(email: str, password: str) -> None:
+    auth = supabase_auth_request(
+        "token?grant_type=password",
+        {"email": email, "password": password},
+    )
+    st.session_state.access_token = auth["access_token"]
+    st.session_state.current_user = auth["user"]
+    profile = load_profile(auth["user"])
+    if profile is None:
+        profile = create_profile(auth["user"], auth["user"].get("email", "Usuario"))
+    st.session_state.current_profile = profile
+
+
+def register_user(nombre: str, email: str, password: str) -> None:
+    auth = supabase_auth_request(
+        "signup",
+        {"email": email, "password": password, "data": {"nombre": nombre}},
+    )
+    user = auth.get("user")
+    access_token = auth.get("access_token")
+    if not user:
+        raise RuntimeError("No se recibio el usuario creado desde Supabase Auth.")
+    if not access_token:
+        raise RuntimeError(
+            "Usuario registrado. Revisa si Supabase requiere confirmar el correo antes de iniciar sesion."
+        )
+    st.session_state.access_token = access_token
+    st.session_state.current_user = user
+    st.session_state.current_profile = create_profile(user, nombre)
+
+
+def logout_user() -> None:
+    st.session_state.access_token = ""
+    st.session_state.current_user = None
+    st.session_state.current_profile = None
+    st.session_state.cart = {}
 
 
 def load_products() -> tuple[list[dict], str]:
@@ -368,6 +466,13 @@ def load_orders() -> tuple[list[dict], str]:
     return orders, "supabase"
 
 
+def load_current_user_orders(orders: list[dict]) -> list[dict]:
+    email = current_profile().get("email", "").lower()
+    if not email:
+        return []
+    return [order for order in orders if order["cliente"].get("email", "").lower() == email]
+
+
 def update_order_status(order_id: str, estado: str) -> None:
     if not has_supabase_config():
         for order in st.session_state.demo_orders:
@@ -401,6 +506,53 @@ def render_header(product_source: str, order_source: str) -> None:
     cols[0].metric("Catalogo", "MongoDB" if product_source == "mongodb" else "Demo")
     cols[1].metric("Pedidos", "Supabase" if order_source == "supabase" else "Demo")
     cols[2].metric("Estado operativo", "Listo")
+
+
+def render_auth_page() -> None:
+    st.title("Falabella Cloud Order Manager")
+    st.caption("Inicia sesion para comprar o administrar pedidos.")
+
+    if not has_supabase_config():
+        st.error("Configura Supabase en secrets para usar autenticacion.")
+        return
+
+    tab_login, tab_register = st.tabs(["Iniciar sesion", "Crear cuenta"])
+
+    with tab_login:
+        with st.form("login_form"):
+            email = st.text_input("Correo electronico", key="login_email")
+            password = st.text_input("Contrasena", type="password", key="login_password")
+            submitted = st.form_submit_button("Entrar")
+        if submitted:
+            if not email or not password:
+                st.error("Ingresa correo y contrasena.")
+                return
+            try:
+                login_user(email, password)
+                st.success("Sesion iniciada.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo iniciar sesion. {exc}")
+
+    with tab_register:
+        with st.form("register_form"):
+            nombre = st.text_input("Nombre completo")
+            email = st.text_input("Correo electronico")
+            password = st.text_input("Contrasena", type="password")
+            submitted = st.form_submit_button("Crear cuenta cliente")
+        if submitted:
+            if not nombre or not email or not password:
+                st.error("Completa nombre, correo y contrasena.")
+                return
+            if len(password) < 6:
+                st.error("La contrasena debe tener al menos 6 caracteres.")
+                return
+            try:
+                register_user(nombre, email, password)
+                st.success("Cuenta creada.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo crear la cuenta. {exc}")
 
 
 def render_catalog(productos: list[dict]) -> None:
@@ -467,8 +619,9 @@ def render_cart(productos: list[dict]) -> None:
 
     with st.form("checkout_form"):
         st.markdown("**Datos del cliente**")
-        nombre = st.text_input("Nombre completo")
-        email = st.text_input("Correo electronico")
+        profile = current_profile()
+        nombre = st.text_input("Nombre completo", value=profile.get("nombre", ""))
+        email = st.text_input("Correo electronico", value=profile.get("email", ""))
         telefono = st.text_input("Telefono")
         direccion = st.text_area("Direccion de entrega")
         submitted = st.form_submit_button("Confirmar compra")
@@ -547,6 +700,28 @@ def render_admin(orders: list[dict]) -> None:
                 st.rerun()
 
 
+def render_my_orders(orders: list[dict]) -> None:
+    st.subheader("Mis pedidos")
+    user_orders = load_current_user_orders(orders)
+
+    if not user_orders:
+        st.info("Aun no tienes pedidos registrados con tu correo.")
+        return
+
+    for order in user_orders:
+        with st.expander(f"{order['codigo']} - {order['estado']}"):
+            st.write(f"Fecha: {order['fecha_pedido']}")
+            st.write(f"Total: **{money(order['total'])}**")
+            detalle = pd.DataFrame(order["items"])
+            if not detalle.empty:
+                detalle["precio"] = detalle["precio"].map(money)
+                detalle["subtotal"] = detalle["subtotal"].map(money)
+                st.dataframe(
+                    detalle[["nombre", "categoria", "precio", "cantidad", "subtotal"]],
+                    use_container_width=True,
+                )
+
+
 def render_dashboard(orders: list[dict]) -> None:
     st.subheader("Dashboard")
 
@@ -601,14 +776,31 @@ def main() -> None:
     st.set_page_config(page_title="Falabella Order Manager", page_icon="🛒", layout="wide")
     init_state()
 
+    if not is_authenticated():
+        render_auth_page()
+        return
+
     productos, product_source = load_products()
     orders, order_source = load_orders()
     render_header(product_source, order_source)
     render_security_notices()
 
+    profile = current_profile()
+    role = current_role()
+    st.sidebar.write(f"Usuario: **{profile.get('nombre', 'Usuario')}**")
+    st.sidebar.write(f"Rol: **{role}**")
+    if st.sidebar.button("Cerrar sesion"):
+        logout_user()
+        st.rerun()
+
+    if role == "admin":
+        pages = ["Catalogo", "Carrito", "Mis pedidos", "Pedidos administrativos", "Dashboard", "Configuracion"]
+    else:
+        pages = ["Catalogo", "Carrito", "Mis pedidos"]
+
     page = st.sidebar.radio(
         "Modulos del sistema",
-        ["Catalogo", "Carrito", "Pedidos administrativos", "Dashboard", "Configuracion"],
+        pages,
     )
     st.sidebar.divider()
     st.sidebar.write(f"Productos en catalogo: **{len(productos)}**")
@@ -619,6 +811,8 @@ def main() -> None:
         render_catalog(productos)
     elif page == "Carrito":
         render_cart(productos)
+    elif page == "Mis pedidos":
+        render_my_orders(orders)
     elif page == "Pedidos administrativos":
         render_admin(orders)
     elif page == "Dashboard":
