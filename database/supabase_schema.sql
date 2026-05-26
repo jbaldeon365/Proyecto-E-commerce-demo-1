@@ -1,31 +1,3 @@
--- ============================================================
--- Base de datos para plataforma ecommerce Falabella
--- Tecnologia: Supabase / PostgreSQL
--- ============================================================
-
--- IMPORTANTE PARA SUPABASE:
--- En Supabase NO se ejecuta normalmente CREATE DATABASE desde el SQL Editor,
--- porque la base de datos ya se crea automaticamente al crear el proyecto.
--- Por eso, en Supabase debes ejecutar desde la seccion "Extensiones y tablas".
-
--- OPCIONAL SOLO PARA POSTGRESQL LOCAL:
--- Si estas usando PostgreSQL instalado en tu computadora, puedes ejecutar:
---
--- create database falabella_ecommerce;
--- \c falabella_ecommerce
---
--- En Supabase, deja esas lineas comentadas.
-
--- Extension necesaria para generar UUID automaticamente.
-create extension if not exists "pgcrypto";
-
--- Limpieza opcional para reiniciar el esquema durante pruebas.
--- Descomenta estas lineas solo si quieres borrar las tablas existentes.
---
--- drop table if exists detalle_pedidos;
--- drop table if exists pedidos;
--- drop table if exists clientes;
--- drop table if exists perfiles;
 
 -- ============================================================
 -- Tabla: perfiles
@@ -101,9 +73,7 @@ create index if not exists idx_perfiles_rol on perfiles (rol);
 -- ============================================================
 -- Permisos para usar Supabase desde Streamlit con anon/public key
 -- ============================================================
--- Para un proyecto academico/demo, se permiten lecturas, inserciones
--- y actualizaciones desde la aplicacion. En un sistema real conviene
--- reemplazar estas politicas por autenticacion de usuarios y roles.
+
 
 grant usage on schema public to anon, authenticated;
 revoke update on perfiles from anon, authenticated;
@@ -193,8 +163,6 @@ with check (true);
 
 -- ============================================================
 -- Datos de prueba opcionales
--- Estos registros permiten validar el panel administrativo y dashboard
--- incluso antes de crear pedidos desde Streamlit.
 -- ============================================================
 
 insert into clientes (id, nombre, email, telefono, direccion)

@@ -15,6 +15,9 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 - Streamlit: interfaz web.
 - MongoDB: catalogo de productos.
 - Supabase: clientes, pedidos y detalle de pedidos.
+- Redis: carrito temporal por usuario.
+- Docker: contenedor de ejecucion de la app.
+- Railway: despliegue cloud del contenedor.
 - Pandas: tablas y metricas.
 
 ## Estructura
@@ -42,6 +45,87 @@ python -m venv .venv
 pip install -r requirements.txt
 streamlit run app.py
 ```
+
+## Ejecutar con Docker
+
+Construir la imagen:
+
+```bash
+docker build -t falabella-order-manager .
+```
+
+Ejecutar el contenedor:
+
+```bash
+docker run --env-file .env -p 8501:8501 falabella-order-manager
+```
+
+Ejemplo de `.env` local:
+
+```text
+MONGODB_URI=mongodb+srv://USUARIO:CLAVE@cluster.mongodb.net/?retryWrites=true&w=majority
+MONGODB_DATABASE=falabella_ecommerce
+MONGODB_COLLECTION=productos
+SUPABASE_URL=https://TU-PROYECTO.supabase.co
+SUPABASE_KEY=TU_SUPABASE_ANON_O_PUBLISHABLE_KEY
+REDIS_URL=redis://default:CLAVE@HOST:PUERTO
+```
+
+No subas `.env` a GitHub.
+
+## Desplegar en Railway con Docker
+
+1. Sube estos archivos a GitHub:
+
+```text
+Dockerfile
+.dockerignore
+railway.json
+requirements.txt
+app.py
+database/
+```
+
+2. En Railway crea un proyecto:
+
+```text
+New Project > Deploy from GitHub repo
+```
+
+3. Selecciona el repositorio y la rama:
+
+```text
+v1
+```
+
+4. Railway detectara el `Dockerfile` y construira el contenedor.
+
+5. En el servicio de la app, entra a `Variables` y agrega:
+
+```text
+MONGODB_URI
+MONGODB_DATABASE
+MONGODB_COLLECTION
+SUPABASE_URL
+SUPABASE_KEY
+REDIS_URL
+```
+
+6. Para Redis en Railway:
+
+```text
+New > Database > Redis
+```
+
+Luego vincula o copia `REDIS_URL` al servicio de la app.
+
+7. En MongoDB Atlas, permite conexiones desde Railway. Para pruebas:
+
+```text
+0.0.0.0/0
+```
+
+8. Ejecuta el deploy. La app usara el puerto dinamico `PORT` que Railway asigna automaticamente.
 
 ## Configurar Supabase
 
@@ -101,6 +185,51 @@ collection = "productos"
 4. En la app, entra al modulo `Configuracion` y pulsa `Cargar productos semilla en MongoDB`.
 
 Tambien puedes importar manualmente `database/productos_mongodb_seed.json` en MongoDB Compass o Atlas.
+
+## Configurar Redis para carrito temporal
+
+Redis es opcional. Si no se configura, el carrito se guarda solo en la sesion activa de Streamlit.
+Si configuras Redis, el carrito se conserva por usuario aunque recargue la pagina o vuelva a iniciar sesion.
+
+### En Railway
+
+1. Crea o abre tu proyecto en Railway.
+2. Agrega un servicio Redis desde `New > Database > Redis`.
+3. Copia la variable generada por Railway:
+
+```text
+REDIS_URL
+```
+
+4. En el servicio de la app Streamlit, agrega estas variables:
+
+```text
+REDIS_URL
+MONGODB_URI
+MONGODB_DATABASE
+MONGODB_COLLECTION
+SUPABASE_URL
+SUPABASE_KEY
+```
+
+5. Despliega nuevamente la app.
+
+### En local o Streamlit Cloud
+
+Tambien puedes configurar Redis en `.streamlit/secrets.toml`:
+
+```toml
+[redis]
+url = "redis://default:CLAVE@HOST:PUERTO"
+```
+
+La app guarda el carrito con una clave por usuario:
+
+```text
+cart:<id_usuario_supabase>
+```
+
+El carrito expira despues de 24 horas.
 
 ## Modo demo
 

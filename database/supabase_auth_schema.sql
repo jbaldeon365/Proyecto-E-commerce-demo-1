@@ -2,10 +2,6 @@
 -- Autenticacion y perfiles para V1
 -- Proyecto ecommerce Falabella
 -- ============================================================
--- Ejecuta este archivo en Supabase > SQL Editor.
---
--- Supabase Auth gestiona email/contrasena en auth.users.
--- Esta tabla guarda el rol que usa Streamlit: cliente o admin.
 
 create table if not exists perfiles (
   id uuid primary key references auth.users(id) on delete cascade,

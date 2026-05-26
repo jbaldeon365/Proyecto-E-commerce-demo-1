@@ -14,6 +14,11 @@ try:
 except Exception:  # pragma: no cover
     MongoClient = None
 
+try:
+    import redis
+except Exception:  # pragma: no cover
+    redis = None
+
 ESTADOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
 ROLES = ["cliente", "admin"]
 
@@ -129,6 +134,24 @@ def get_supabase_config() -> tuple[str, str]:
     return url, key
 
 
+def get_redis_url() -> str:
+    return get_secret("redis", "url", "REDIS_URL")
+
+
+@st.cache_resource(show_spinner=False)
+def get_redis_client():
+    url = get_redis_url()
+    if not url or redis is None:
+        return None
+
+    try:
+        client = redis.from_url(url, decode_responses=True)
+        client.ping()
+        return client
+    except Exception:
+        return None
+
+
 def has_supabase_config() -> bool:
     url, key = get_supabase_config()
     return bool(url and key)
@@ -229,6 +252,7 @@ def init_state() -> None:
     st.session_state.setdefault("access_token", "")
     st.session_state.setdefault("current_user", None)
     st.session_state.setdefault("current_profile", None)
+    st.session_state.setdefault("cart_loaded_from_redis", False)
 
 
 def money(value: float) -> str:
@@ -257,6 +281,65 @@ def current_role() -> str:
 
 def is_authenticated() -> bool:
     return bool(st.session_state.get("access_token") and st.session_state.get("current_user"))
+
+
+def current_user_id() -> str:
+    user = st.session_state.get("current_user") or {}
+    return user.get("id", "")
+
+
+def redis_cart_key() -> str:
+    user_id = current_user_id()
+    return f"cart:{user_id}" if user_id else ""
+
+
+def load_cart_from_redis() -> None:
+    if st.session_state.get("cart_loaded_from_redis"):
+        return
+
+    client = get_redis_client()
+    key = redis_cart_key()
+    if client is None or not key:
+        st.session_state.cart_loaded_from_redis = True
+        return
+
+    raw_cart = client.get(key)
+    try:
+        raw_cart = client.get(key)
+        if raw_cart:
+            cart = json.loads(raw_cart)
+            st.session_state.cart = {str(pid): int(quantity) for pid, quantity in cart.items()}
+    except (TypeError, ValueError):
+        st.session_state.cart = {}
+    except Exception:
+        pass
+
+    st.session_state.cart_loaded_from_redis = True
+
+
+def save_cart_to_redis() -> None:
+    client = get_redis_client()
+    key = redis_cart_key()
+    if client is None or not key:
+        return
+
+    try:
+        if st.session_state.cart:
+            client.set(key, json.dumps(st.session_state.cart), ex=60 * 60 * 24)
+        else:
+            client.delete(key)
+    except Exception:
+        pass
+
+
+def clear_cart_from_redis() -> None:
+    client = get_redis_client()
+    key = redis_cart_key()
+    if client is not None and key:
+        try:
+            client.delete(key)
+        except Exception:
+            pass
 
 
 def load_profile(user: dict) -> dict | None:
@@ -293,6 +376,8 @@ def login_user(email: str, password: str) -> None:
     if profile is None:
         profile = create_profile(auth["user"], auth["user"].get("email", "Usuario"))
     st.session_state.current_profile = profile
+    st.session_state.cart_loaded_from_redis = False
+    load_cart_from_redis()
 
 
 def register_user(nombre: str, email: str, password: str) -> None:
@@ -311,13 +396,17 @@ def register_user(nombre: str, email: str, password: str) -> None:
     st.session_state.access_token = access_token
     st.session_state.current_user = user
     st.session_state.current_profile = create_profile(user, nombre)
+    st.session_state.cart_loaded_from_redis = False
+    load_cart_from_redis()
 
 
 def logout_user() -> None:
+    save_cart_to_redis()
     st.session_state.access_token = ""
     st.session_state.current_user = None
     st.session_state.current_profile = None
     st.session_state.cart = {}
+    st.session_state.cart_loaded_from_redis = False
 
 
 def load_products() -> tuple[list[dict], str]:
@@ -337,11 +426,13 @@ def load_products() -> tuple[list[dict], str]:
 def add_to_cart(pid: str, quantity: int) -> None:
     current = st.session_state.cart.get(pid, 0)
     st.session_state.cart[pid] = current + quantity
+    save_cart_to_redis()
     st.toast("Producto agregado al carrito")
 
 
 def remove_from_cart(pid: str) -> None:
     st.session_state.cart.pop(pid, None)
+    save_cart_to_redis()
 
 
 def cart_items(productos: list[dict]) -> list[dict]:
@@ -418,21 +509,28 @@ def discount_stock(items: list[dict]) -> None:
 def clean_cart_by_stock(productos: list[dict]) -> list[str]:
     by_id = {product_id(producto): producto for producto in productos}
     warnings = []
+    changed = False
 
     for pid, quantity in list(st.session_state.cart.items()):
         producto = by_id.get(pid)
         if not producto:
             st.session_state.cart.pop(pid, None)
             warnings.append("Se retiro un producto que ya no existe en el catalogo.")
+            changed = True
             continue
 
         stock = int(producto.get("stock", 0))
         if stock <= 0:
             st.session_state.cart.pop(pid, None)
             warnings.append(f"{producto['nombre']} se retiro del carrito porque no tiene stock.")
+            changed = True
         elif quantity > stock:
             st.session_state.cart[pid] = stock
             warnings.append(f"{producto['nombre']} se ajusto a {stock} unidad(es) por stock disponible.")
+            changed = True
+
+    if changed:
+        save_cart_to_redis()
 
     return warnings
 
@@ -458,6 +556,7 @@ def create_order(cliente: dict, items: list[dict]) -> str:
         )
         discount_stock(items)
         st.session_state.cart = {}
+        clear_cart_from_redis()
         return codigo
 
     cliente_res = supabase_request(
@@ -496,6 +595,7 @@ def create_order(cliente: dict, items: list[dict]) -> str:
     supabase_request("POST", "detalle_pedidos", payload=detalle)
     discount_stock(items)
     st.session_state.cart = {}
+    clear_cart_from_redis()
     return codigo
 
 
@@ -856,15 +956,19 @@ def render_data_tools(product_source: str, order_source: str) -> None:
     st.write("Estado actual de las conexiones principales de la plataforma.")
     render_security_notices()
 
-    cols = st.columns(3)
+    redis_source = "Redis" if get_redis_client() is not None else "Sesion local"
+    cols = st.columns(4)
     cols[0].metric("Catalogo", "MongoDB" if product_source == "mongodb" else "Demo")
     cols[1].metric("Pedidos", "Supabase" if order_source == "supabase" else "Demo")
-    cols[2].metric("Estado operativo", "Listo")
+    cols[2].metric("Carrito temporal", redis_source)
+    cols[3].metric("Estado operativo", "Listo")
 
     if product_source == "demo":
         st.warning("El catalogo esta usando datos demo. Revisa la conexion o los productos en MongoDB.")
     if order_source == "demo":
         st.warning("Los pedidos estan usando modo demo. Revisa la conexion de Supabase.")
+    if redis_source != "Redis":
+        st.info("Redis no esta configurado. El carrito se conserva solo en la sesion activa.")
 
 
 def main() -> None:
@@ -874,6 +978,8 @@ def main() -> None:
     if not is_authenticated():
         render_auth_page()
         return
+
+    load_cart_from_redis()
 
     productos, product_source = load_products()
     orders, order_source = load_orders()

@@ -1,17 +1,3 @@
--- ============================================================
--- Politicas RLS para usar Supabase desde Streamlit
--- Proyecto ecommerce Falabella
--- ============================================================
--- Ejecuta este archivo en Supabase > SQL Editor.
---
--- Objetivo:
--- Permitir que la app Streamlit use anon/public/publishable key
--- para leer pedidos, crear pedidos y actualizar estados.
---
--- Nota:
--- Estas politicas son adecuadas para una demo academica V1.
--- En produccion se recomienda usar autenticacion real y roles.
-
 grant usage on schema public to anon, authenticated;
 
 revoke update on table perfiles from anon, authenticated;
