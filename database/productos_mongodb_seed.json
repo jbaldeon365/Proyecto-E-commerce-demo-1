@@ -1,0 +1,88 @@
+[
+  {
+    "_id": "PROD-001",
+    "nombre": "Laptop Lenovo IdeaPad 15",
+    "categoria": "Tecnologia",
+    "precio": 2499.90,
+    "stock": 12,
+    "imagen": "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?auto=format&fit=crop&w=900&q=80",
+    "descripcion": "Laptop de 15 pulgadas para estudio, oficina y productividad diaria.",
+    "caracteristicas": {
+      "marca": "Lenovo",
+      "procesador": "Intel Core i5",
+      "memoria": "16 GB RAM",
+      "almacenamiento": "512 GB SSD"
+    }
+  },
+  {
+    "_id": "PROD-002",
+    "nombre": "Smart TV Samsung 55 4K",
+    "categoria": "Electrodomesticos",
+    "precio": 1899.00,
+    "stock": 8,
+    "imagen": "https://images.unsplash.com/photo-1593784991095-a205069470b6?auto=format&fit=crop&w=900&q=80",
+    "descripcion": "Televisor 4K con aplicaciones integradas y alto contraste.",
+    "caracteristicas": {
+      "marca": "Samsung",
+      "tamano": "55 pulgadas",
+      "resolucion": "4K UHD",
+      "garantia": "12 meses"
+    }
+  },
+  {
+    "_id": "PROD-003",
+    "nombre": "Zapatillas Urbanas Hombre",
+    "categoria": "Moda",
+    "precio": 179.90,
+    "stock": 25,
+    "imagen": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=900&q=80",
+    "descripcion": "Zapatillas comodas para uso diario con suela antideslizante.",
+    "caracteristicas": {
+      "talla": "40-44",
+      "color": "Negro",
+      "material": "Textil y sintetico"
+    }
+  },
+  {
+    "_id": "PROD-004",
+    "nombre": "Refrigeradora No Frost 300L",
+    "categoria": "Electrodomesticos",
+    "precio": 1399.50,
+    "stock": 6,
+    "imagen": "https://images.unsplash.com/photo-1584568694244-14fbdf83bd30?auto=format&fit=crop&w=900&q=80",
+    "descripcion": "Refrigeradora de bajo consumo con tecnologia No Frost.",
+    "caracteristicas": {
+      "capacidad": "300 litros",
+      "consumo": "Clase A",
+      "garantia": "24 meses"
+    }
+  },
+  {
+    "_id": "PROD-005",
+    "nombre": "Audifonos Bluetooth Sony",
+    "categoria": "Tecnologia",
+    "precio": 349.90,
+    "stock": 18,
+    "imagen": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&w=900&q=80",
+    "descripcion": "Audifonos inalambricos con cancelacion de ruido y bateria prolongada.",
+    "caracteristicas": {
+      "marca": "Sony",
+      "conexion": "Bluetooth",
+      "bateria": "30 horas"
+    }
+  },
+  {
+    "_id": "PROD-006",
+    "nombre": "Casaca Impermeable Mujer",
+    "categoria": "Moda",
+    "precio": 229.90,
+    "stock": 15,
+    "imagen": "https://images.unsplash.com/photo-1544022613-e87ca75a784a?auto=format&fit=crop&w=900&q=80",
+    "descripcion": "Casaca ligera resistente al agua para temporada fria.",
+    "caracteristicas": {
+      "talla": "S-M-L",
+      "color": "Azul",
+      "material": "Poliester"
+    }
+  }
+]

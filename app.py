@@ -122,12 +122,41 @@ def get_mongo_collection():
 def get_supabase_config() -> tuple[str, str]:
     url = get_secret("supabase", "url", "SUPABASE_URL")
     key = get_secret("supabase", "key", "SUPABASE_KEY")
-    return url.rstrip("/"), key
+    url = url.rstrip("/")
+    if url.endswith("/rest/v1"):
+        url = url.removesuffix("/rest/v1")
+    return url, key
 
 
 def has_supabase_config() -> bool:
     url, key = get_supabase_config()
     return bool(url and key)
+
+
+def supabase_key_type() -> str:
+    _, key = get_supabase_config()
+    lowered = key.lower()
+    if not key:
+        return "missing"
+    if "service_role" in lowered or lowered.startswith("sb_secret_"):
+        return "secret"
+    if lowered.startswith("sb_publishable_") or "anon" in lowered:
+        return "public"
+    return "unknown"
+
+
+def render_security_notices() -> None:
+    key_type = supabase_key_type()
+    if key_type == "secret":
+        st.warning(
+            "Supabase esta usando una secret/service key. Para una V1 segura, usa anon/public key "
+            "con politicas RLS y guarda la secret key solo en entornos privados."
+        )
+    elif key_type == "unknown":
+        st.info(
+            "No se pudo identificar el tipo de key de Supabase. Verifica que sea anon/public/publishable "
+            "para evitar exponer credenciales administrativas."
+        )
 
 
 def supabase_headers(prefer_return: bool = False) -> dict[str, str]:
@@ -159,7 +188,14 @@ def supabase_request(
         json=payload,
         timeout=12,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = response.text[:300] if response.text else str(exc)
+        raise RuntimeError(
+            f"Supabase rechazo la solicitud a la tabla '{table}'. "
+            f"Codigo HTTP: {response.status_code}. Detalle: {detail}"
+        ) from exc
     if not response.text:
         return []
     return response.json()
@@ -441,12 +477,19 @@ def render_cart(productos: list[dict]) -> None:
         if not nombre or not email:
             st.error("Ingresa nombre y correo para generar el pedido.")
             return
-        codigo = create_order(
-            {"nombre": nombre, "email": email, "telefono": telefono, "direccion": direccion},
-            items,
-        )
-        st.success(f"Pedido generado correctamente: {codigo}")
-        st.rerun()
+        try:
+            codigo = create_order(
+                {"nombre": nombre, "email": email, "telefono": telefono, "direccion": direccion},
+                items,
+            )
+            st.success(f"Pedido generado correctamente: {codigo}")
+            st.rerun()
+        except Exception as exc:
+            st.error("No se pudo guardar el pedido en Supabase.")
+            st.info(
+                "Revisa que hayas ejecutado el SQL completo, incluyendo permisos y politicas RLS. "
+                f"Detalle tecnico: {exc}"
+            )
 
 
 def render_admin(orders: list[dict]) -> None:
@@ -539,6 +582,7 @@ def render_dashboard(orders: list[dict]) -> None:
 def render_data_tools(product_source: str) -> None:
     st.subheader("Configuracion y carga inicial")
     st.write("Usa esta seccion para preparar datos de demostracion y validar conexiones.")
+    render_security_notices()
 
     col1, col2 = st.columns(2)
     with col1:
@@ -560,6 +604,7 @@ def main() -> None:
     productos, product_source = load_products()
     orders, order_source = load_orders()
     render_header(product_source, order_source)
+    render_security_notices()
 
     page = st.sidebar.radio(
         "Modulos del sistema",

@@ -52,8 +52,11 @@ streamlit run app.py
 ```toml
 [supabase]
 url = "https://TU-PROYECTO.supabase.co"
-key = "TU_SUPABASE_ANON_KEY"
+key = "TU_SUPABASE_ANON_O_PUBLISHABLE_KEY"
 ```
+
+Para una version 1 segura, usa una key anon/public/publishable con politicas RLS.
+No subas `.streamlit/secrets.toml` a GitHub y evita usar una secret/service key en apps publicas.
 
 ## Configurar MongoDB
 
