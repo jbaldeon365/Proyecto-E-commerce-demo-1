@@ -847,22 +847,20 @@ def render_dashboard(orders: list[dict]) -> None:
         st.bar_chart(by_category.set_index("categoria"))
 
 
-def render_data_tools(product_source: str) -> None:
-    st.subheader("Configuracion y carga inicial")
-    st.write("Usa esta seccion para preparar datos de demostracion y validar conexiones.")
+def render_data_tools(product_source: str, order_source: str) -> None:
+    st.subheader("Configuracion del sistema")
+    st.write("Estado actual de las conexiones principales de la plataforma.")
     render_security_notices()
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.info("MongoDB almacena el catalogo flexible de productos.")
-        if st.button("Cargar productos semilla en MongoDB"):
-            seed_mongodb()
-    with col2:
-        st.info("Supabase almacena clientes, pedidos y detalle de pedidos.")
-        st.code("database/supabase_schema.sql", language="text")
+    cols = st.columns(3)
+    cols[0].metric("Catalogo", "MongoDB" if product_source == "mongodb" else "Demo")
+    cols[1].metric("Pedidos", "Supabase" if order_source == "supabase" else "Demo")
+    cols[2].metric("Estado operativo", "Listo")
 
     if product_source == "demo":
-        st.warning("El catalogo esta usando datos demo porque MongoDB no esta configurado o no tiene productos.")
+        st.warning("El catalogo esta usando datos demo. Revisa la conexion o los productos en MongoDB.")
+    if order_source == "demo":
+        st.warning("Los pedidos estan usando modo demo. Revisa la conexion de Supabase.")
 
 
 def main() -> None:
@@ -887,7 +885,7 @@ def main() -> None:
         st.rerun()
 
     if role == "admin":
-        pages = ["Pedidos administrativos", "Dashboard"]
+        pages = ["Pedidos administrativos", "Dashboard", "Configuracion"]
     else:
         pages = ["Catalogo", "Carrito", "Mis pedidos"]
 
@@ -911,7 +909,7 @@ def main() -> None:
     elif page == "Dashboard":
         render_dashboard(orders)
     else:
-        render_data_tools(product_source)
+        render_data_tools(product_source, order_source)
 
 
 if __name__ == "__main__":
