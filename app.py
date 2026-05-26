@@ -365,9 +365,80 @@ def cart_total(items: list[dict]) -> float:
     return sum(item["subtotal"] for item in items)
 
 
+def validate_cart_stock(items: list[dict]) -> list[str]:
+    collection = get_mongo_collection()
+    errors = []
+
+    if collection is None:
+        return errors
+
+    for item in items:
+        producto = collection.find_one({"_id": item["producto_id"]}, {"stock": 1, "nombre": 1})
+        if not producto:
+            errors.append(f"{item['nombre']} ya no esta disponible en el catalogo.")
+            continue
+        available = int(producto.get("stock", 0))
+        requested = int(item["cantidad"])
+        if requested > available:
+            errors.append(
+                f"{item['nombre']}: solicitaste {requested}, pero solo hay {available} disponible(s)."
+            )
+
+    return errors
+
+
+def discount_stock(items: list[dict]) -> None:
+    collection = get_mongo_collection()
+    if collection is None:
+        return
+
+    updated_items = []
+    try:
+        for item in items:
+            result = collection.update_one(
+                {"_id": item["producto_id"], "stock": {"$gte": int(item["cantidad"])}},
+                {"$inc": {"stock": -int(item["cantidad"])}},
+            )
+            if result.modified_count != 1:
+                raise RuntimeError(f"No se pudo descontar stock de {item['nombre']}.")
+            updated_items.append(item)
+    except Exception:
+        for item in updated_items:
+            collection.update_one(
+                {"_id": item["producto_id"]},
+                {"$inc": {"stock": int(item["cantidad"])}},
+            )
+        raise
+
+
+def clean_cart_by_stock(productos: list[dict]) -> list[str]:
+    by_id = {product_id(producto): producto for producto in productos}
+    warnings = []
+
+    for pid, quantity in list(st.session_state.cart.items()):
+        producto = by_id.get(pid)
+        if not producto:
+            st.session_state.cart.pop(pid, None)
+            warnings.append("Se retiro un producto que ya no existe en el catalogo.")
+            continue
+
+        stock = int(producto.get("stock", 0))
+        if stock <= 0:
+            st.session_state.cart.pop(pid, None)
+            warnings.append(f"{producto['nombre']} se retiro del carrito porque no tiene stock.")
+        elif quantity > stock:
+            st.session_state.cart[pid] = stock
+            warnings.append(f"{producto['nombre']} se ajusto a {stock} unidad(es) por stock disponible.")
+
+    return warnings
+
+
 def create_order(cliente: dict, items: list[dict]) -> str:
     codigo = f"FAL-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:8].upper()}"
     total = cart_total(items)
+    stock_errors = validate_cart_stock(items)
+    if stock_errors:
+        raise RuntimeError(" ".join(stock_errors))
 
     if not has_supabase_config():
         st.session_state.demo_orders.append(
@@ -381,6 +452,7 @@ def create_order(cliente: dict, items: list[dict]) -> str:
                 "fecha_pedido": now_iso(),
             }
         )
+        discount_stock(items)
         st.session_state.cart = {}
         return codigo
 
@@ -418,6 +490,7 @@ def create_order(cliente: dict, items: list[dict]) -> str:
         for item in items
     ]
     supabase_request("POST", "detalle_pedidos", payload=detalle)
+    discount_stock(items)
     st.session_state.cart = {}
     return codigo
 
@@ -577,28 +650,48 @@ def render_catalog(productos: list[dict]) -> None:
         row = st.columns(3)
         for col, producto in zip(row, filtrados[index : index + 3]):
             with col:
+                stock = int(producto.get("stock", 0))
                 st.image(producto["imagen"], use_container_width=True)
                 st.markdown(f"**{producto['nombre']}**")
-                st.caption(f"{producto['categoria']} | Stock: {producto['stock']}")
+                st.caption(f"{producto['categoria']} | Stock: {stock}")
                 st.write(producto["descripcion"])
                 st.write(f"**{money(float(producto['precio']))}**")
 
                 with st.expander("Caracteristicas"):
                     st.json(producto.get("caracteristicas", {}), expanded=False)
 
-                qty = st.number_input(
-                    "Cantidad",
-                    min_value=1,
-                    max_value=max(1, int(producto["stock"])),
-                    value=1,
-                    key=f"qty_{product_id(producto)}",
-                )
-                if st.button("Agregar al carrito", key=f"add_{product_id(producto)}"):
-                    add_to_cart(product_id(producto), qty)
+                if stock <= 0:
+                    st.warning("Sin stock disponible")
+                    st.button("Agregar al carrito", key=f"add_{product_id(producto)}", disabled=True)
+                else:
+                    qty = st.number_input(
+                        "Cantidad",
+                        min_value=1,
+                        max_value=stock,
+                        value=1,
+                        key=f"qty_{product_id(producto)}",
+                    )
+                    already_in_cart = st.session_state.cart.get(product_id(producto), 0)
+                    remaining = stock - already_in_cart
+                    disabled = remaining <= 0
+                    if st.button(
+                        "Agregar al carrito",
+                        key=f"add_{product_id(producto)}",
+                        disabled=disabled,
+                    ):
+                        if qty > remaining:
+                            st.error(f"Solo puedes agregar {remaining} unidad(es) mas de este producto.")
+                        else:
+                            add_to_cart(product_id(producto), qty)
+                    if disabled:
+                        st.caption("Ya agregaste todo el stock disponible al carrito.")
 
 
 def render_cart(productos: list[dict]) -> None:
     st.subheader("Carrito de compras")
+    for warning in clean_cart_by_stock(productos):
+        st.warning(warning)
+
     items = cart_items(productos)
 
     if not items:
