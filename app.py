@@ -571,14 +571,9 @@ def seed_mongodb() -> None:
     st.success("Catalogo semilla cargado en MongoDB.")
 
 
-def render_header(product_source: str, order_source: str) -> None:
+def render_header() -> None:
     st.title("Falabella Cloud Order Manager")
     st.caption("Plataforma ecommerce escalable orientada a catalogo, carrito y gestion de pedidos.")
-
-    cols = st.columns(3)
-    cols[0].metric("Catalogo", "MongoDB" if product_source == "mongodb" else "Demo")
-    cols[1].metric("Pedidos", "Supabase" if order_source == "supabase" else "Demo")
-    cols[2].metric("Estado operativo", "Listo")
 
 
 def render_auth_page() -> None:
@@ -873,7 +868,7 @@ def main() -> None:
 
     productos, product_source = load_products()
     orders, order_source = load_orders()
-    render_header(product_source, order_source)
+    render_header()
     render_security_notices()
 
     profile = current_profile()
