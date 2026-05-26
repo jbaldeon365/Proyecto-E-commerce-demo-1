@@ -235,6 +235,10 @@ def money(value: float) -> str:
     return f"S/ {value:,.2f}"
 
 
+def humanize_key(key: str) -> str:
+    return key.replace("_", " ").capitalize()
+
+
 def product_id(producto: dict) -> str:
     return str(producto.get("_id") or producto.get("id"))
 
@@ -653,7 +657,12 @@ def render_catalog(productos: list[dict]) -> None:
                 st.write(f"**{money(float(producto['precio']))}**")
 
                 with st.expander("Caracteristicas"):
-                    st.json(producto.get("caracteristicas", {}), expanded=False)
+                    caracteristicas = producto.get("caracteristicas", {})
+                    if caracteristicas:
+                        for key, value in caracteristicas.items():
+                            st.write(f"**{humanize_key(str(key))}:** {value}")
+                    else:
+                        st.write("Sin caracteristicas adicionales.")
 
                 if stock <= 0:
                     st.warning("Sin stock disponible")
