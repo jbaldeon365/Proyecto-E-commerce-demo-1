@@ -887,7 +887,7 @@ def main() -> None:
         st.rerun()
 
     if role == "admin":
-        pages = ["Pedidos administrativos", "Dashboard", "Configuracion"]
+        pages = ["Pedidos administrativos", "Dashboard"]
     else:
         pages = ["Catalogo", "Carrito", "Mis pedidos"]
 
