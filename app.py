@@ -572,12 +572,12 @@ def seed_mongodb() -> None:
 
 
 def render_header() -> None:
-    st.title("Falabella Cloud Order Manager")
+    st.title("Gestor de pedidos - Falabella Cloud")
     st.caption("Plataforma ecommerce escalable orientada a catalogo, carrito y gestion de pedidos.")
 
 
 def render_auth_page() -> None:
-    st.title("Falabella Cloud Order Manager")
+    st.title("Gestor de pedidos - Falabella Cloud")
     st.caption("Inicia sesion para comprar o administrar pedidos.")
 
     if not has_supabase_config():
