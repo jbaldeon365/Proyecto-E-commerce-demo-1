@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
 
 ESTADOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
 ROLES = ["cliente", "admin"]
-METODOS_PAGO = ["Tarjeta", "Yape", "Pago contra entrega"]
+METODOS_PAGO = ["Tarjeta - Culqi", "Tarjeta - Niubiz", "Yape"]
 ESTADOS_PAGO = ["Aprobado", "Rechazado"]
 CATALOG_CACHE_KEY = "catalogo:productos"
 CATALOG_CACHE_TTL_SECONDS = 300
@@ -257,6 +257,13 @@ def init_state() -> None:
     st.session_state.setdefault("current_user", None)
     st.session_state.setdefault("current_profile", None)
     st.session_state.setdefault("cart_loaded_from_redis", False)
+    st.session_state.setdefault("show_payment_gateway", False)
+    st.session_state.setdefault("payment_step", 1)
+    st.session_state.setdefault("checkout_customer", {})
+    st.session_state.setdefault("checkout_items", [])
+    st.session_state.setdefault("payment_method", METODOS_PAGO[0])
+    st.session_state.setdefault("payment_details", {})
+    st.session_state.setdefault("simulate_payment_rejection", False)
 
 
 def money(value: float) -> str:
@@ -518,6 +525,189 @@ def simulate_payment(metodo_pago: str, estado_pago: str) -> dict:
         "codigo_pago": f"PAY-{str(uuid4())[:8].upper()}",
         "fecha_pago": now_iso(),
     }
+
+
+def reset_payment_gateway() -> None:
+    st.session_state.show_payment_gateway = False
+    st.session_state.payment_step = 1
+    st.session_state.checkout_customer = {}
+    st.session_state.checkout_items = []
+    st.session_state.payment_method = METODOS_PAGO[0]
+    st.session_state.payment_details = {}
+    st.session_state.simulate_payment_rejection = False
+
+
+def mask_card_number(card_number: str) -> str:
+    digits = "".join(char for char in card_number if char.isdigit())
+    if len(digits) < 4:
+        return "****"
+    return f"**** **** **** {digits[-4:]}"
+
+
+def validate_payment_details(method: str, details: dict) -> list[str]:
+    errors = []
+
+    if method in ["Tarjeta - Culqi", "Tarjeta - Niubiz"]:
+        card_number = "".join(char for char in details.get("card_number", "") if char.isdigit())
+        cvv = "".join(char for char in details.get("cvv", "") if char.isdigit())
+        if not details.get("card_holder"):
+            errors.append("Ingresa el nombre del titular de la tarjeta.")
+        if len(card_number) < 13 or len(card_number) > 19:
+            errors.append("Ingresa un numero de tarjeta valido.")
+        if not details.get("expiry"):
+            errors.append("Ingresa la fecha de vencimiento.")
+        if len(cvv) not in [3, 4]:
+            errors.append("Ingresa un CVV valido.")
+        if not details.get("document"):
+            errors.append("Ingresa el documento del titular.")
+    elif method == "Yape":
+        phone = "".join(char for char in details.get("phone", "") if char.isdigit())
+        approval_code = "".join(char for char in details.get("approval_code", "") if char.isdigit())
+        if len(phone) != 9:
+            errors.append("Ingresa un numero de celular Yape de 9 digitos.")
+        if len(approval_code) < 6:
+            errors.append("Ingresa el numero de aprobacion de Yape.")
+    else:
+        errors.append("Selecciona un metodo de pago valido.")
+
+    return errors
+
+
+def payment_gateway_content() -> None:
+    items = st.session_state.get("checkout_items", [])
+    customer = st.session_state.get("checkout_customer", {})
+    total = cart_total(items)
+    step = st.session_state.get("payment_step", 1)
+
+    st.metric("Monto total a pagar", money(total))
+    st.caption("Pasarela simulada para validar el flujo de checkout antes de generar el pedido.")
+
+    if step == 1:
+        st.markdown("**Paso 1 de 3: selecciona el metodo de pago**")
+        method = st.radio(
+            "Metodo de pago",
+            METODOS_PAGO,
+            index=METODOS_PAGO.index(st.session_state.payment_method),
+            horizontal=True,
+        )
+        st.session_state.payment_method = method
+
+        col1, col2 = st.columns(2)
+        if col1.button("Cancelar", use_container_width=True):
+            reset_payment_gateway()
+            st.rerun()
+        if col2.button("Siguiente", type="primary", use_container_width=True):
+            st.session_state.payment_step = 2
+            st.rerun()
+
+    elif step == 2:
+        method = st.session_state.payment_method
+        details = st.session_state.payment_details
+        st.markdown(f"**Paso 2 de 3: datos de pago - {method}**")
+
+        if method in ["Tarjeta - Culqi", "Tarjeta - Niubiz"]:
+            details["card_holder"] = st.text_input(
+                "Titular de la tarjeta",
+                value=details.get("card_holder", customer.get("nombre", "")),
+            )
+            details["card_number"] = st.text_input(
+                "Numero de tarjeta",
+                value=details.get("card_number", ""),
+                placeholder="4111 1111 1111 1111",
+            )
+            col_a, col_b = st.columns(2)
+            details["expiry"] = col_a.text_input(
+                "Vencimiento",
+                value=details.get("expiry", ""),
+                placeholder="MM/AA",
+            )
+            details["cvv"] = col_b.text_input(
+                "CVV",
+                value=details.get("cvv", ""),
+                type="password",
+            )
+            details["document"] = st.text_input(
+                "Documento del titular",
+                value=details.get("document", ""),
+                placeholder="DNI o CE",
+            )
+            details["installments"] = st.selectbox(
+                "Cuotas",
+                ["1 cuota", "3 cuotas", "6 cuotas", "12 cuotas"],
+                index=["1 cuota", "3 cuotas", "6 cuotas", "12 cuotas"].index(
+                    details.get("installments", "1 cuota")
+                ),
+            )
+        else:
+            details["phone"] = st.text_input(
+                "Numero de celular Yape",
+                value=details.get("phone", ""),
+                placeholder="999888777",
+            )
+            details["approval_code"] = st.text_input(
+                "Numero de aprobacion",
+                value=details.get("approval_code", ""),
+                placeholder="123456",
+            )
+
+        st.session_state.payment_details = details
+
+        col1, col2 = st.columns(2)
+        if col1.button("Atras", use_container_width=True):
+            st.session_state.payment_step = 1
+            st.rerun()
+        if col2.button("Siguiente", type="primary", use_container_width=True):
+            errors = validate_payment_details(method, details)
+            if errors:
+                for error in errors:
+                    st.error(error)
+            else:
+                st.session_state.payment_step = 3
+                st.rerun()
+
+    else:
+        method = st.session_state.payment_method
+        details = st.session_state.payment_details
+        st.markdown("**Paso 3 de 3: confirma la operacion**")
+        st.write(f"Cliente: **{customer.get('nombre', '')}**")
+        st.write(f"Correo: {customer.get('email', '')}")
+        st.write(f"Metodo: **{method}**")
+        if method in ["Tarjeta - Culqi", "Tarjeta - Niubiz"]:
+            st.write(f"Tarjeta: {mask_card_number(details.get('card_number', ''))}")
+            st.write(f"Cuotas: {details.get('installments', '1 cuota')}")
+        else:
+            st.write(f"Celular Yape: {details.get('phone', '')}")
+            st.write(f"Nro. aprobacion: {details.get('approval_code', '')}")
+
+        st.session_state.simulate_payment_rejection = st.checkbox(
+            "Simular rechazo de la pasarela para pruebas",
+            value=st.session_state.simulate_payment_rejection,
+        )
+
+        col1, col2 = st.columns(2)
+        if col1.button("Atras", use_container_width=True):
+            st.session_state.payment_step = 2
+            st.rerun()
+        if col2.button("Confirmar pago", type="primary", use_container_width=True):
+            status = "Rechazado" if st.session_state.simulate_payment_rejection else "Aprobado"
+            payment = simulate_payment(method, status)
+            try:
+                codigo = create_order(customer, items, payment)
+                reset_payment_gateway()
+                st.success(f"Pago aprobado y pedido generado correctamente: {codigo}")
+                st.rerun()
+            except Exception as exc:
+                st.error("No se pudo completar la compra.")
+                st.info(f"Detalle tecnico: {exc}")
+
+
+def render_payment_gateway() -> None:
+    dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+    if dialog:
+        dialog("Pasarela de pago simulada")(payment_gateway_content)()
+    else:
+        with st.container(border=True):
+            payment_gateway_content()
 
 
 def record_payment_attempt(cliente: dict, payment: dict, amount: float, pedido_id: str | None = None) -> None:
@@ -942,30 +1132,27 @@ def render_cart(productos: list[dict]) -> None:
         email = st.text_input("Correo electronico", value=profile.get("email", ""))
         telefono = st.text_input("Telefono")
         direccion = st.text_area("Direccion de entrega")
-        st.markdown("**Pasarela de pago simulada**")
-        metodo_pago = st.selectbox("Metodo de pago", METODOS_PAGO)
-        estado_pago = st.selectbox("Resultado simulado del pago", ESTADOS_PAGO)
-        submitted = st.form_submit_button("Pagar y confirmar compra")
+        submitted = st.form_submit_button("Pagar")
 
     if submitted:
         if not nombre or not email:
             st.error("Ingresa nombre y correo para generar el pedido.")
             return
-        try:
-            payment = simulate_payment(metodo_pago, estado_pago)
-            codigo = create_order(
-                {"nombre": nombre, "email": email, "telefono": telefono, "direccion": direccion},
-                items,
-                payment,
-            )
-            st.success(f"Pago aprobado y pedido generado correctamente: {codigo}")
-            st.rerun()
-        except Exception as exc:
-            st.error("No se pudo completar la compra.")
-            st.info(
-                "Verifica el resultado de la pasarela simulada, el stock disponible o la conexion con Supabase. "
-                f"Detalle tecnico: {exc}"
-            )
+        st.session_state.checkout_customer = {
+            "nombre": nombre,
+            "email": email,
+            "telefono": telefono,
+            "direccion": direccion,
+        }
+        st.session_state.checkout_items = items
+        st.session_state.payment_step = 1
+        st.session_state.payment_details = {}
+        st.session_state.simulate_payment_rejection = False
+        st.session_state.show_payment_gateway = True
+        st.rerun()
+
+    if st.session_state.get("show_payment_gateway"):
+        render_payment_gateway()
 
 
 def render_admin(orders: list[dict]) -> None:
