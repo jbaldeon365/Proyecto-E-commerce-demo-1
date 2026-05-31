@@ -1,0 +1,17 @@
+name: Procesar pedidos automaticos
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/15 * * * *"
+
+jobs:
+  procesar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Invocar Supabase Edge Function
+        run: |
+          curl -sS -X POST "${{ secrets.SUPABASE_EDGE_FUNCTION_URL }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_EDGE_FUNCTION_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            --fail

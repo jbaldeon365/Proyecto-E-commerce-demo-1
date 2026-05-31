@@ -32,6 +32,7 @@ create table if not exists clientes (
 -- Guarda la cabecera del pedido y su estado dentro del flujo.
 -- Estados permitidos:
 -- Pendiente -> Procesando -> Enviado -> Entregado
+-- Excepciones: Pago pendiente, Observado, Revision administrativa, Cancelado
 -- ============================================================
 
 create table if not exists pedidos (
@@ -40,12 +41,27 @@ create table if not exists pedidos (
   cliente_id uuid not null references clientes(id) on delete restrict,
   total numeric(12, 2) not null check (total >= 0),
   estado text not null default 'Pendiente'
-    check (estado in ('Pendiente', 'Procesando', 'Enviado', 'Entregado')),
+    check (
+      estado in (
+        'Pendiente',
+        'Procesando',
+        'Enviado',
+        'Entregado',
+        'Pago pendiente',
+        'Observado',
+        'Revision administrativa',
+        'Cancelado'
+      )
+    ),
   metodo_pago text not null default 'Tarjeta',
   estado_pago text not null default 'Aprobado'
     check (estado_pago in ('Aprobado', 'Rechazado')),
   codigo_pago text,
   fecha_pago timestamptz,
+  requiere_revision boolean not null default false,
+  motivo_revision text,
+  actualizado_por text not null default 'sistema',
+  fecha_actualizacion_estado timestamptz not null default now(),
   fecha_pedido timestamptz not null default now()
 );
 
@@ -53,9 +69,29 @@ alter table pedidos add column if not exists metodo_pago text not null default '
 alter table pedidos add column if not exists estado_pago text not null default 'Aprobado';
 alter table pedidos add column if not exists codigo_pago text;
 alter table pedidos add column if not exists fecha_pago timestamptz;
+alter table pedidos add column if not exists requiere_revision boolean not null default false;
+alter table pedidos add column if not exists motivo_revision text;
+alter table pedidos add column if not exists actualizado_por text not null default 'sistema';
+alter table pedidos add column if not exists fecha_actualizacion_estado timestamptz not null default now();
 
 do $$
 begin
+  alter table pedidos drop constraint if exists pedidos_estado_check;
+  alter table pedidos
+  add constraint pedidos_estado_check
+  check (
+    estado in (
+      'Pendiente',
+      'Procesando',
+      'Enviado',
+      'Entregado',
+      'Pago pendiente',
+      'Observado',
+      'Revision administrativa',
+      'Cancelado'
+    )
+  );
+
   if not exists (
     select 1
     from pg_constraint
@@ -108,6 +144,8 @@ create table if not exists pagos_simulados (
 create index if not exists idx_pedidos_codigo on pedidos (codigo);
 create index if not exists idx_pedidos_estado on pedidos (estado);
 create index if not exists idx_pedidos_estado_pago on pedidos (estado_pago);
+create index if not exists idx_pedidos_revision on pedidos (requiere_revision);
+create index if not exists idx_pedidos_fecha_estado on pedidos (fecha_actualizacion_estado);
 create index if not exists idx_detalle_pedido_id on detalle_pedidos (pedido_id);
 create index if not exists idx_perfiles_rol on perfiles (rol);
 create index if not exists idx_pagos_estado_pago on pagos_simulados (estado_pago);
@@ -125,6 +163,80 @@ grant select, insert, update on clientes to anon, authenticated;
 grant select, insert, update on pedidos to anon, authenticated;
 grant select, insert, update on detalle_pedidos to anon, authenticated;
 grant select, insert on pagos_simulados to anon, authenticated;
+
+-- ============================================================
+-- Funcion: procesar_pedidos_automaticos
+-- Simula una tarea cloud programada. Avanza pedidos normales y
+-- deja excepciones para revision administrativa.
+-- ============================================================
+
+create or replace function procesar_pedidos_automaticos()
+returns table (actualizados int, observados int)
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_actualizados int := 0;
+  v_observados int := 0;
+  v_count int := 0;
+begin
+  update pedidos
+  set
+    estado = 'Pago pendiente',
+    requiere_revision = true,
+    motivo_revision = 'Pago rechazado o pendiente. Requiere revision administrativa.',
+    actualizado_por = 'edge_function',
+    fecha_actualizacion_estado = now()
+  where estado in ('Pendiente', 'Procesando')
+    and estado_pago <> 'Aprobado';
+
+  get diagnostics v_observados = row_count;
+
+  update pedidos
+  set
+    estado = 'Procesando',
+    actualizado_por = 'edge_function',
+    fecha_actualizacion_estado = now()
+  where estado = 'Pendiente'
+    and estado_pago = 'Aprobado'
+    and requiere_revision = false
+    and fecha_actualizacion_estado <= now() - interval '1 minute';
+
+  get diagnostics v_count = row_count;
+  v_actualizados := v_count;
+
+  update pedidos
+  set
+    estado = 'Enviado',
+    actualizado_por = 'edge_function',
+    fecha_actualizacion_estado = now()
+  where estado = 'Procesando'
+    and estado_pago = 'Aprobado'
+    and requiere_revision = false
+    and fecha_actualizacion_estado <= now() - interval '5 minutes';
+
+  get diagnostics v_count = row_count;
+  v_actualizados := v_actualizados + v_count;
+
+  update pedidos
+  set
+    estado = 'Entregado',
+    actualizado_por = 'edge_function',
+    fecha_actualizacion_estado = now()
+  where estado = 'Enviado'
+    and estado_pago = 'Aprobado'
+    and requiere_revision = false
+    and fecha_actualizacion_estado <= now() - interval '10 minutes';
+
+  get diagnostics v_count = row_count;
+  v_actualizados := v_actualizados + v_count;
+
+  return query select v_actualizados, v_observados;
+end;
+$$;
+
+grant execute on function procesar_pedidos_automaticos() to anon, authenticated;
 
 alter table perfiles enable row level security;
 alter table clientes enable row level security;
@@ -244,6 +356,10 @@ insert into pedidos (
   estado_pago,
   codigo_pago,
   fecha_pago,
+  requiere_revision,
+  motivo_revision,
+  actualizado_por,
+  fecha_actualizacion_estado,
   fecha_pedido
 )
 values
@@ -256,6 +372,10 @@ values
     'Tarjeta',
     'Aprobado',
     'PAY-DEMO-0001',
+    now(),
+    false,
+    null,
+    'sistema',
     now(),
     now()
   )

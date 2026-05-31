@@ -6,6 +6,7 @@ grant select, insert, update on table clientes to anon, authenticated;
 grant select, insert, update on table pedidos to anon, authenticated;
 grant select, insert, update on table detalle_pedidos to anon, authenticated;
 grant select, insert on table pagos_simulados to anon, authenticated;
+grant execute on function procesar_pedidos_automaticos() to anon, authenticated;
 
 alter table perfiles enable row level security;
 alter table clientes enable row level security;

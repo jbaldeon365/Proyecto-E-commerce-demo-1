@@ -8,7 +8,7 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 - Carrito de compras con agregar, quitar, subtotal, total y confirmacion.
 - Pasarela de pago simulada antes de generar el pedido.
 - Registro de pedidos con codigo, cliente, productos, cantidades, total, fecha y estado.
-- Panel administrativo para buscar, filtrar, ver detalle y actualizar estados.
+- Panel administrativo para buscar, filtrar, ver detalle, resolver excepciones y actualizar estados.
 - Dashboard con pedidos, ventas simuladas, pagos, productos mas vendidos, bajo stock y categorias.
 
 ## Tecnologias
@@ -17,6 +17,8 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 - MongoDB: catalogo de productos.
 - Supabase: clientes, pedidos y detalle de pedidos.
 - Upstash Redis: carrito temporal por usuario y cache temporal del catalogo.
+- Supabase Edge Functions: procesamiento automatico de pedidos.
+- GitHub Actions: ejecucion programada de la Edge Function.
 - Pandas: tablas y metricas.
 
 ## Estructura
@@ -29,6 +31,10 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 ├── .gitignore
 ├── .streamlit/
 │   └── secrets.toml.example
+├── .github/
+│   └── workflows/procesar-pedidos.yml
+├── supabase/
+│   └── functions/procesar-pedidos/index.ts
 └── database/
     ├── productos_mongodb_seed.json
     ├── supabase_schema.sql
@@ -94,6 +100,54 @@ where email = 'admin@correo.com';
 Los usuarios nuevos se crean como `cliente`. El admin puede ver el panel administrativo,
 dashboard y configuracion; el cliente puede comprar y consultar sus pedidos.
 
+## Automatizacion de pedidos con Supabase Edge Function
+
+La app incluye una funcion SQL llamada `procesar_pedidos_automaticos()` y una Edge Function en
+`supabase/functions/procesar-pedidos/index.ts`.
+
+El flujo normal puede avanzar sin intervencion manual:
+
+```text
+Pendiente -> Procesando -> Enviado -> Entregado
+```
+
+Los casos con problemas quedan detenidos para revision:
+
+```text
+Pago pendiente
+Observado
+Revision administrativa
+Cancelado
+```
+
+### Paso a paso en Supabase
+
+1. Entra a `SQL Editor`.
+2. Ejecuta nuevamente `database/supabase_schema.sql`.
+3. Verifica que `pedidos` tenga estas columnas:
+   - `requiere_revision`
+   - `motivo_revision`
+   - `actualizado_por`
+   - `fecha_actualizacion_estado`
+4. En `Edge Functions`, crea una funcion llamada `procesar-pedidos`.
+5. Copia el contenido de `supabase/functions/procesar-pedidos/index.ts`.
+6. En `Settings > Edge Functions > Secrets`, confirma que existan `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`.
+7. Despliega la funcion.
+8. Prueba desde el panel administrativo con `Ejecutar procesamiento automatico`.
+
+### Paso a paso en GitHub
+
+El archivo `.github/workflows/procesar-pedidos.yml` llama la Edge Function cada 15 minutos.
+
+En GitHub crea estos secretos en `Settings > Secrets and variables > Actions`:
+
+```text
+SUPABASE_EDGE_FUNCTION_URL=https://TU-PROYECTO.supabase.co/functions/v1/procesar-pedidos
+SUPABASE_EDGE_FUNCTION_TOKEN=TU_TOKEN_PARA_INVOCAR_LA_FUNCION
+```
+
+Luego entra a `Actions > Procesar pedidos automaticos > Run workflow` para probarlo manualmente.
+
 ## Configurar MongoDB
 
 1. Crea un cluster en MongoDB Atlas.
@@ -155,7 +209,6 @@ Antes de generar un pedido, el cliente selecciona un metodo de pago y el resulta
 
 - Tarjeta
 - Yape
-- Pago contra entrega
 
 El pago puede ser `Aprobado` o `Rechazado`. Si el pago es aprobado, el sistema genera el pedido en
 Supabase y descuenta stock en MongoDB Atlas. Si el pago es rechazado, no se genera pedido, pero el
@@ -184,7 +237,9 @@ flowchart TD
     F --> G[El pedido se almacena en Supabase]
     C --> H[Catalogo consultado desde Redis o MongoDB]
     H --> M[MongoDB Atlas como fuente oficial]
-    G --> I[Area administrativa revisa el pedido]
-    I --> J[Se actualiza el estado del pedido]
+    G --> A1[Edge Function procesa pedidos normales]
+    A1 -->|Sin observaciones| J[Estado avanza automaticamente]
+    A1 -->|Con problemas| I[Area administrativa revisa excepciones]
+    I --> J
     J --> K[Dashboard muestra reportes y metricas]
 ```

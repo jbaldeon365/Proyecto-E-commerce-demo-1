@@ -20,13 +20,16 @@ try:
 except Exception:  # pragma: no cover
     redis = None
 
-ESTADOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
+ESTADOS_OPERATIVOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
+ESTADOS_EXCEPCION = ["Pago pendiente", "Observado", "Revision administrativa", "Cancelado"]
+ESTADOS = ESTADOS_OPERATIVOS + ESTADOS_EXCEPCION
 ROLES = ["cliente", "admin"]
 METODOS_PAGO = ["Tarjeta", "Yape"]
 ESTADOS_PAGO = ["Aprobado", "Rechazado"]
 CATALOG_CACHE_KEY = "catalogo:productos"
 CATALOG_CACHE_TTL_SECONDS = 300
 LIMA_TZ = ZoneInfo("America/Lima")
+MONTO_REVISION_ADMIN = 5000
 
 PRODUCTOS_DEMO = [
     {
@@ -783,6 +786,18 @@ def validate_cart_stock(items: list[dict]) -> list[str]:
     return errors
 
 
+def evaluate_order_review(cliente: dict, total: float, payment: dict) -> tuple[bool, str]:
+    if payment.get("estado_pago") != "Aprobado":
+        return True, "Pago rechazado o pendiente. Requiere validacion antes de continuar."
+    if not cliente.get("telefono") or not cliente.get("direccion"):
+        return True, "Datos de contacto o direccion incompletos."
+    if len(str(cliente.get("direccion", "")).strip()) < 12:
+        return True, "Direccion de entrega demasiado corta para despacho."
+    if total >= MONTO_REVISION_ADMIN:
+        return True, f"Pedido de monto alto. Supera el umbral de {money(MONTO_REVISION_ADMIN)}."
+    return False, ""
+
+
 def discount_stock(items: list[dict]) -> None:
     collection = get_mongo_collection()
     if collection is None:
@@ -846,6 +861,8 @@ def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
     stock_errors = validate_cart_stock(items)
     if stock_errors:
         raise RuntimeError(" ".join(stock_errors))
+    requires_review, review_reason = evaluate_order_review(cliente, total, payment)
+    initial_status = "Revision administrativa" if requires_review else "Pendiente"
 
     if not has_supabase_config():
         st.session_state.demo_orders.append(
@@ -855,11 +872,15 @@ def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
                 "cliente": cliente,
                 "items": items,
                 "total": total,
-                "estado": "Pendiente",
+                "estado": initial_status,
                 "metodo_pago": payment["metodo_pago"],
                 "estado_pago": payment["estado_pago"],
                 "codigo_pago": payment["codigo_pago"],
                 "fecha_pago": payment["fecha_pago"],
+                "requiere_revision": requires_review,
+                "motivo_revision": review_reason,
+                "actualizado_por": "sistema",
+                "fecha_actualizacion_estado": now_iso(),
                 "fecha_pedido": now_iso(),
             }
         )
@@ -888,11 +909,15 @@ def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
             "codigo": codigo,
             "cliente_id": cliente_id,
             "total": total,
-            "estado": "Pendiente",
+            "estado": initial_status,
             "metodo_pago": payment["metodo_pago"],
             "estado_pago": payment["estado_pago"],
             "codigo_pago": payment["codigo_pago"],
             "fecha_pago": payment["fecha_pago"],
+            "requiere_revision": requires_review,
+            "motivo_revision": review_reason,
+            "actualizado_por": "sistema",
+            "fecha_actualizacion_estado": now_iso(),
         },
         prefer_return=True,
     )
@@ -928,6 +953,7 @@ def load_orders() -> tuple[list[dict], str]:
         params={
             "select": (
                 "id,codigo,total,estado,metodo_pago,estado_pago,codigo_pago,fecha_pago,"
+                "requiere_revision,motivo_revision,actualizado_por,fecha_actualizacion_estado,"
                 "fecha_pedido,clientes(nombre,email,telefono,direccion)"
             ),
             "order": "fecha_pedido.desc",
@@ -963,6 +989,10 @@ def load_orders() -> tuple[list[dict], str]:
                 "estado_pago": pedido.get("estado_pago", "Aprobado"),
                 "codigo_pago": pedido.get("codigo_pago", ""),
                 "fecha_pago": pedido.get("fecha_pago", ""),
+                "requiere_revision": bool(pedido.get("requiere_revision", False)),
+                "motivo_revision": pedido.get("motivo_revision", ""),
+                "actualizado_por": pedido.get("actualizado_por", ""),
+                "fecha_actualizacion_estado": pedido.get("fecha_actualizacion_estado", ""),
                 "fecha_pedido": pedido["fecha_pedido"],
             }
         )
@@ -989,19 +1019,46 @@ def load_payment_attempts() -> list[dict]:
         return []
 
 
-def update_order_status(order_id: str, estado: str) -> None:
+def update_order_status(order_id: str, estado: str, motivo_revision: str = "") -> None:
+    requires_review = estado in ESTADOS_EXCEPCION and estado != "Cancelado"
     if not has_supabase_config():
         for order in st.session_state.demo_orders:
             if order["id"] == order_id:
                 order["estado"] = estado
+                order["requiere_revision"] = requires_review
+                order["motivo_revision"] = motivo_revision
+                order["actualizado_por"] = "admin"
+                order["fecha_actualizacion_estado"] = now_iso()
                 return
     else:
         supabase_request(
             "PATCH",
             "pedidos",
             params={"id": f"eq.{order_id}"},
-            payload={"estado": estado},
+            payload={
+                "estado": estado,
+                "requiere_revision": requires_review,
+                "motivo_revision": motivo_revision,
+                "actualizado_por": "admin",
+                "fecha_actualizacion_estado": now_iso(),
+            },
         )
+
+
+def run_automatic_order_processing() -> dict:
+    if not has_supabase_config():
+        return {"actualizados": 0}
+    result = supabase_request(
+        "POST",
+        "rpc/procesar_pedidos_automaticos",
+        payload={},
+        prefer_return=True,
+    )
+    if isinstance(result, list) and result:
+        return result[0]
+    if isinstance(result, dict):
+        return result
+    return {"actualizados": 0}
 
 
 def seed_mongodb() -> None:
@@ -1244,10 +1301,28 @@ def render_cart(productos: list[dict]) -> None:
 
 def render_admin(orders: list[dict]) -> None:
     st.subheader("Administracion de pedidos")
+    st.caption(
+        "El flujo normal puede avanzar automaticamente; el administrador revisa excepciones, "
+        "pedidos observados y casos que requieren criterio humano."
+    )
 
     if not orders:
         st.info("Aun no hay pedidos registrados.")
         return
+
+    with st.container(border=True):
+        st.markdown("**Automatizacion operativa**")
+        st.write(
+            "Procesa pedidos aprobados sin observaciones y deja detenidos los casos con pago, datos "
+            "o revision administrativa pendiente."
+        )
+        if st.button("Ejecutar procesamiento automatico", type="primary"):
+            try:
+                result = run_automatic_order_processing()
+                st.success(f"Procesamiento ejecutado. Pedidos actualizados: {result.get('actualizados', 0)}.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"No se pudo ejecutar la automatizacion. {exc}")
 
     st.markdown("**Filtros de busqueda**")
     col1, col2, col3 = st.columns(3)
@@ -1293,7 +1368,7 @@ def render_admin(orders: list[dict]) -> None:
     summary = st.columns(4)
     summary[0].metric("Pedidos encontrados", len(filtered))
     summary[1].metric("Pendientes", sum(1 for order in filtered if order["estado"] == "Pendiente"))
-    summary[2].metric("Entregados", sum(1 for order in filtered if order["estado"] == "Entregado"))
+    summary[2].metric("En revision", sum(1 for order in filtered if order.get("requiere_revision")))
     summary[3].metric("Total filtrado", money(sum(order["total"] for order in filtered)))
 
     table = [
@@ -1304,6 +1379,7 @@ def render_admin(orders: list[dict]) -> None:
             "estado": order["estado"],
             "pago": order.get("estado_pago", "Aprobado"),
             "metodo_pago": order.get("metodo_pago", "Tarjeta"),
+            "revision": "Si" if order.get("requiere_revision") else "No",
             "total": money(order["total"]),
             "fecha_lima": format_lima_datetime(order["fecha_pedido"]),
         }
@@ -1338,6 +1414,8 @@ def render_admin(orders: list[dict]) -> None:
             )
             if order.get("codigo_pago"):
                 st.caption(f"Codigo de pago: {order['codigo_pago']}")
+            if order.get("requiere_revision") or order.get("motivo_revision"):
+                st.warning(order.get("motivo_revision") or "Pedido marcado para revision administrativa.")
 
             detalle = pd.DataFrame(order["items"])
             if not detalle.empty:
@@ -1351,11 +1429,16 @@ def render_admin(orders: list[dict]) -> None:
             nuevo_estado = st.selectbox(
                 "Actualizar estado",
                 ESTADOS,
-                index=ESTADOS.index(order["estado"]),
+                index=ESTADOS.index(order["estado"]) if order["estado"] in ESTADOS else 0,
                 key=f"estado_{order['id']}",
             )
+            motivo_revision = st.text_area(
+                "Motivo u observacion administrativa",
+                value=order.get("motivo_revision", ""),
+                key=f"motivo_{order['id']}",
+            )
             if st.button("Guardar estado", key=f"save_{order['id']}"):
-                update_order_status(order["id"], nuevo_estado)
+                update_order_status(order["id"], nuevo_estado, motivo_revision)
                 st.success("Estado actualizado.")
                 st.rerun()
 
@@ -1376,6 +1459,8 @@ def render_my_orders(orders: list[dict]) -> None:
                 f"Pago: **{order.get('estado_pago', 'Aprobado')}** "
                 f"({order.get('metodo_pago', 'Tarjeta')})"
             )
+            if order.get("requiere_revision") or order.get("motivo_revision"):
+                st.warning(order.get("motivo_revision") or "Tu pedido requiere revision administrativa.")
             detalle = pd.DataFrame(order["items"])
             if not detalle.empty:
                 detalle["precio"] = detalle["precio"].map(money)
@@ -1392,6 +1477,7 @@ def render_dashboard(orders: list[dict], productos: list[dict], payments: list[d
     total_orders = len(orders)
     pending = sum(1 for order in orders if order["estado"] == "Pendiente")
     delivered = sum(1 for order in orders if order["estado"] == "Entregado")
+    review_orders = sum(1 for order in orders if order.get("requiere_revision"))
     sales = sum(order["total"] for order in orders)
     avg_ticket = sales / total_orders if total_orders else 0
     approved_payments = sum(1 for payment in payments if payment.get("estado_pago") == "Aprobado")
@@ -1406,7 +1492,7 @@ def render_dashboard(orders: list[dict], productos: list[dict], payments: list[d
 
     cols = st.columns(4)
     cols[0].metric("Ticket promedio", money(avg_ticket))
-    cols[1].metric("Pagos aprobados", approved_payments)
+    cols[1].metric("Pedidos en revision", review_orders)
     cols[2].metric("Pagos rechazados", rejected_payments)
     cols[3].metric("Productos bajo stock", low_stock)
 
