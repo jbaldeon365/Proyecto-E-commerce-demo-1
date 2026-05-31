@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime, timezone
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import requests
@@ -25,6 +26,7 @@ METODOS_PAGO = ["Tarjeta", "Yape"]
 ESTADOS_PAGO = ["Aprobado", "Rechazado"]
 CATALOG_CACHE_KEY = "catalogo:productos"
 CATALOG_CACHE_TTL_SECONDS = 300
+LIMA_TZ = ZoneInfo("America/Lima")
 
 PRODUCTOS_DEMO = [
     {
@@ -281,6 +283,19 @@ def product_id(producto: dict) -> str:
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def format_lima_datetime(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(LIMA_TZ).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return value
 
 
 def current_profile() -> dict:
@@ -596,6 +611,8 @@ def payment_gateway_content() -> None:
 
     if step == 1:
         st.markdown("**Paso 1 de 3: selecciona el metodo de pago**")
+        if st.session_state.payment_method not in METODOS_PAGO:
+            st.session_state.payment_method = METODOS_PAGO[0]
         method = st.radio(
             "Metodo de pago",
             METODOS_PAGO,
@@ -1232,33 +1249,88 @@ def render_admin(orders: list[dict]) -> None:
         st.info("Aun no hay pedidos registrados.")
         return
 
-    search = st.text_input("Buscar por codigo de pedido")
-    status = st.selectbox("Filtrar por estado", ["Todos"] + ESTADOS)
+    st.markdown("**Filtros de busqueda**")
+    col1, col2, col3 = st.columns(3)
+    search = col1.text_input("Buscar codigo o cliente", placeholder="FAL-..., nombre o correo")
+    status = col2.selectbox("Estado del pedido", ["Todos"] + ESTADOS)
+    payment_status = col3.selectbox("Estado de pago", ["Todos"] + ESTADOS_PAGO)
+
+    col4, col5, col6 = st.columns(3)
+    payment_methods = sorted({order.get("metodo_pago", "Tarjeta") for order in orders})
+    payment_method = col4.selectbox("Metodo de pago", ["Todos"] + payment_methods)
+    clientes = sorted(
+        {
+            order["cliente"].get("nombre", "").strip()
+            for order in orders
+            if order["cliente"].get("nombre", "").strip()
+        }
+    )
+    cliente_filter = col5.selectbox("Cliente", ["Todos"] + clientes)
+    limit = col6.selectbox("Mostrar", [10, 25, 50, 100, "Todos"], index=1)
 
     filtered = orders
     if search:
-        filtered = [order for order in filtered if search.upper() in order["codigo"].upper()]
+        query = search.lower()
+        filtered = [
+            order
+            for order in filtered
+            if query in order["codigo"].lower()
+            or query in order["cliente"].get("nombre", "").lower()
+            or query in order["cliente"].get("email", "").lower()
+        ]
     if status != "Todos":
         filtered = [order for order in filtered if order["estado"] == status]
+    if payment_status != "Todos":
+        filtered = [order for order in filtered if order.get("estado_pago", "Aprobado") == payment_status]
+    if payment_method != "Todos":
+        filtered = [order for order in filtered if order.get("metodo_pago", "Tarjeta") == payment_method]
+    if cliente_filter != "Todos":
+        filtered = [order for order in filtered if order["cliente"].get("nombre", "") == cliente_filter]
+
+    filtered = sorted(filtered, key=lambda order: order.get("fecha_pedido", ""), reverse=True)
+    visible_orders = filtered if limit == "Todos" else filtered[: int(limit)]
+
+    summary = st.columns(4)
+    summary[0].metric("Pedidos encontrados", len(filtered))
+    summary[1].metric("Pendientes", sum(1 for order in filtered if order["estado"] == "Pendiente"))
+    summary[2].metric("Entregados", sum(1 for order in filtered if order["estado"] == "Entregado"))
+    summary[3].metric("Total filtrado", money(sum(order["total"] for order in filtered)))
 
     table = [
         {
             "codigo": order["codigo"],
             "cliente": order["cliente"].get("nombre", ""),
+            "email": order["cliente"].get("email", ""),
             "estado": order["estado"],
             "pago": order.get("estado_pago", "Aprobado"),
             "metodo_pago": order.get("metodo_pago", "Tarjeta"),
             "total": money(order["total"]),
-            "fecha_pedido": order["fecha_pedido"],
+            "fecha_lima": format_lima_datetime(order["fecha_pedido"]),
         }
-        for order in filtered
+        for order in visible_orders
     ]
-    st.dataframe(pd.DataFrame(table), use_container_width=True)
+    st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
 
-    for order in filtered:
+    if len(filtered) > len(visible_orders):
+        st.caption(f"Mostrando {len(visible_orders)} de {len(filtered)} pedidos filtrados.")
+
+    st.markdown("**Detalle y actualizacion de estado**")
+    if not filtered:
+        st.info("No hay pedidos que coincidan con los filtros seleccionados.")
+        return
+
+    options = {
+        f"{order['codigo']} | {order['cliente'].get('nombre', '')} | {order['estado']} | {format_lima_datetime(order['fecha_pedido'])}": order
+        for order in filtered
+    }
+    selected_label = st.selectbox("Seleccionar pedido", list(options.keys()))
+    selected_orders = [options[selected_label]] if selected_label else []
+
+    for order in selected_orders:
         with st.expander(f"{order['codigo']} - {order['estado']}"):
             st.write(f"Cliente: **{order['cliente'].get('nombre', '')}**")
             st.write(f"Email: {order['cliente'].get('email', '')}")
+            st.write(f"Fecha Lima: {format_lima_datetime(order['fecha_pedido'])}")
             st.write(f"Total: **{money(order['total'])}**")
             st.write(
                 f"Pago: **{order.get('estado_pago', 'Aprobado')}** "
@@ -1298,7 +1370,7 @@ def render_my_orders(orders: list[dict]) -> None:
 
     for order in user_orders:
         with st.expander(f"{order['codigo']} - {order['estado']}"):
-            st.write(f"Fecha: {order['fecha_pedido']}")
+            st.write(f"Fecha: {format_lima_datetime(order['fecha_pedido'])}")
             st.write(f"Total: **{money(order['total'])}**")
             st.write(
                 f"Pago: **{order.get('estado_pago', 'Aprobado')}** "
