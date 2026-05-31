@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover
 
 ESTADOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
 ROLES = ["cliente", "admin"]
-METODOS_PAGO = ["Tarjeta - Culqi", "Tarjeta - Niubiz", "Yape"]
+METODOS_PAGO = ["Tarjeta", "Yape"]
 ESTADOS_PAGO = ["Aprobado", "Rechazado"]
 CATALOG_CACHE_KEY = "catalogo:productos"
 CATALOG_CACHE_TTL_SECONDS = 300
@@ -264,6 +264,7 @@ def init_state() -> None:
     st.session_state.setdefault("payment_method", METODOS_PAGO[0])
     st.session_state.setdefault("payment_details", {})
     st.session_state.setdefault("simulate_payment_rejection", False)
+    st.session_state.setdefault("checkout_step", "cart")
 
 
 def money(value: float) -> str:
@@ -487,6 +488,14 @@ def add_to_cart(pid: str, quantity: int) -> None:
     st.toast("Producto agregado al carrito")
 
 
+def set_cart_quantity(pid: str, quantity: int) -> None:
+    if quantity <= 0:
+        st.session_state.cart.pop(pid, None)
+    else:
+        st.session_state.cart[pid] = quantity
+    save_cart_to_redis()
+
+
 def remove_from_cart(pid: str) -> None:
     st.session_state.cart.pop(pid, None)
     save_cart_to_redis()
@@ -508,6 +517,8 @@ def cart_items(productos: list[dict]) -> list[dict]:
                 "precio": precio,
                 "cantidad": quantity,
                 "subtotal": precio * quantity,
+                "imagen": producto.get("imagen", ""),
+                "stock": int(producto.get("stock", 0)),
             }
         )
     return items
@@ -535,6 +546,7 @@ def reset_payment_gateway() -> None:
     st.session_state.payment_method = METODOS_PAGO[0]
     st.session_state.payment_details = {}
     st.session_state.simulate_payment_rejection = False
+    st.session_state.checkout_step = "cart"
 
 
 def mask_card_number(card_number: str) -> str:
@@ -547,7 +559,7 @@ def mask_card_number(card_number: str) -> str:
 def validate_payment_details(method: str, details: dict) -> list[str]:
     errors = []
 
-    if method in ["Tarjeta - Culqi", "Tarjeta - Niubiz"]:
+    if method == "Tarjeta":
         card_number = "".join(char for char in details.get("card_number", "") if char.isdigit())
         cvv = "".join(char for char in details.get("cvv", "") if char.isdigit())
         if not details.get("card_holder"):
@@ -605,7 +617,7 @@ def payment_gateway_content() -> None:
         details = st.session_state.payment_details
         st.markdown(f"**Paso 2 de 3: datos de pago - {method}**")
 
-        if method in ["Tarjeta - Culqi", "Tarjeta - Niubiz"]:
+        if method == "Tarjeta":
             details["card_holder"] = st.text_input(
                 "Titular de la tarjeta",
                 value=details.get("card_holder", customer.get("nombre", "")),
@@ -672,7 +684,7 @@ def payment_gateway_content() -> None:
         st.write(f"Cliente: **{customer.get('nombre', '')}**")
         st.write(f"Correo: {customer.get('email', '')}")
         st.write(f"Metodo: **{method}**")
-        if method in ["Tarjeta - Culqi", "Tarjeta - Niubiz"]:
+        if method == "Tarjeta":
             st.write(f"Tarjeta: {mask_card_number(details.get('card_number', ''))}")
             st.write(f"Cuotas: {details.get('installments', '1 cuota')}")
         else:
@@ -1110,46 +1122,104 @@ def render_cart(productos: list[dict]) -> None:
     items = cart_items(productos)
 
     if not items:
+        st.session_state.checkout_step = "cart"
         st.info("El carrito esta vacio. Agrega productos desde el catalogo.")
         return
 
-    df = pd.DataFrame(items)
-    df["precio"] = df["precio"].map(money)
-    df["subtotal"] = df["subtotal"].map(money)
-    st.dataframe(df[["nombre", "categoria", "precio", "cantidad", "subtotal"]], use_container_width=True)
+    if st.session_state.checkout_step == "cart":
+        st.caption("Revisa tus productos antes de continuar con los datos de entrega y pago.")
 
-    for item in items:
-        if st.button(f"Quitar {item['nombre']}", key=f"remove_{item['producto_id']}"):
-            remove_from_cart(item["producto_id"])
+        for item in items:
+            with st.container(border=True):
+                col_img, col_info, col_price, col_qty, col_subtotal, col_remove = st.columns(
+                    [1.1, 3.2, 1.4, 1.8, 1.4, 0.5]
+                )
+
+                with col_img:
+                    if item.get("imagen"):
+                        st.image(item["imagen"], width=90)
+
+                with col_info:
+                    st.markdown(f"**{item['nombre']}**")
+                    st.caption(item["categoria"])
+                    if item["stock"] <= 3:
+                        st.caption("Ultimas unidades")
+
+                with col_price:
+                    st.caption("Precio")
+                    st.write(money(item["precio"]))
+
+                with col_qty:
+                    st.caption("Cantidad")
+                    minus, qty_col, plus = st.columns([1, 1, 1])
+                    if minus.button("-", key=f"minus_{item['producto_id']}", use_container_width=True):
+                        set_cart_quantity(item["producto_id"], item["cantidad"] - 1)
+                        st.rerun()
+                    qty_col.write(f"**{item['cantidad']}**")
+                    if plus.button(
+                        "+",
+                        key=f"plus_{item['producto_id']}",
+                        use_container_width=True,
+                        disabled=item["cantidad"] >= item["stock"],
+                    ):
+                        set_cart_quantity(item["producto_id"], item["cantidad"] + 1)
+                        st.rerun()
+                    st.caption(f"Max {item['stock']} unidades")
+
+                with col_subtotal:
+                    st.caption("Subtotal")
+                    st.write(f"**{money(item['subtotal'])}**")
+
+                with col_remove:
+                    if st.button("X", key=f"remove_{item['producto_id']}", help="Quitar producto"):
+                        remove_from_cart(item["producto_id"])
+                        st.rerun()
+
+        subtotal = cart_total(items)
+        st.divider()
+        summary_cols = st.columns([2, 1])
+        with summary_cols[1]:
+            st.markdown("**Resumen de compra**")
+            st.write(f"Subtotal: **{money(subtotal)}**")
+            st.write("Envio: **S/ 0.00**")
+            st.write(f"Total: **{money(subtotal)}**")
+            if st.button("Siguiente", type="primary", use_container_width=True):
+                st.session_state.checkout_step = "customer"
+                st.rerun()
+
+    else:
+        st.markdown("**Datos de entrega**")
+        st.caption("Completa los datos del cliente antes de pasar a la pasarela de pago.")
+        profile = current_profile()
+        with st.form("checkout_customer_form"):
+            nombre = st.text_input("Nombre completo", value=profile.get("nombre", ""))
+            email = st.text_input("Correo electronico", value=profile.get("email", ""))
+            telefono = st.text_input("Telefono")
+            direccion = st.text_area("Direccion de entrega")
+            col_back, col_pay = st.columns(2)
+            back = col_back.form_submit_button("Volver al carrito", use_container_width=True)
+            submitted = col_pay.form_submit_button("Pagar", type="primary", use_container_width=True)
+
+        if back:
+            st.session_state.checkout_step = "cart"
             st.rerun()
 
-    st.metric("Total", money(cart_total(items)))
-
-    with st.form("checkout_form"):
-        st.markdown("**Datos del cliente**")
-        profile = current_profile()
-        nombre = st.text_input("Nombre completo", value=profile.get("nombre", ""))
-        email = st.text_input("Correo electronico", value=profile.get("email", ""))
-        telefono = st.text_input("Telefono")
-        direccion = st.text_area("Direccion de entrega")
-        submitted = st.form_submit_button("Pagar")
-
-    if submitted:
-        if not nombre or not email:
-            st.error("Ingresa nombre y correo para generar el pedido.")
-            return
-        st.session_state.checkout_customer = {
-            "nombre": nombre,
-            "email": email,
-            "telefono": telefono,
-            "direccion": direccion,
-        }
-        st.session_state.checkout_items = items
-        st.session_state.payment_step = 1
-        st.session_state.payment_details = {}
-        st.session_state.simulate_payment_rejection = False
-        st.session_state.show_payment_gateway = True
-        st.rerun()
+        if submitted:
+            if not nombre or not email:
+                st.error("Ingresa nombre y correo para generar el pedido.")
+                return
+            st.session_state.checkout_customer = {
+                "nombre": nombre,
+                "email": email,
+                "telefono": telefono,
+                "direccion": direccion,
+            }
+            st.session_state.checkout_items = items
+            st.session_state.payment_step = 1
+            st.session_state.payment_details = {}
+            st.session_state.simulate_payment_rejection = False
+            st.session_state.show_payment_gateway = True
+            st.rerun()
 
     if st.session_state.get("show_payment_gateway"):
         render_payment_gateway()
