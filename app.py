@@ -21,6 +21,10 @@ except Exception:  # pragma: no cover
 
 ESTADOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
 ROLES = ["cliente", "admin"]
+METODOS_PAGO = ["Tarjeta", "Yape", "Pago contra entrega"]
+ESTADOS_PAGO = ["Aprobado", "Rechazado"]
+CATALOG_CACHE_KEY = "catalogo:productos"
+CATALOG_CACHE_TTL_SECONDS = 300
 
 PRODUCTOS_DEMO = [
     {
@@ -342,6 +346,47 @@ def clear_cart_from_redis() -> None:
             pass
 
 
+def normalize_product(producto: dict) -> dict:
+    normalized = dict(producto)
+    normalized["_id"] = str(normalized.get("_id") or normalized.get("id"))
+    return normalized
+
+
+def load_catalog_from_redis() -> list[dict] | None:
+    client = get_redis_client()
+    if client is None:
+        return None
+    try:
+        raw_catalog = client.get(CATALOG_CACHE_KEY)
+        if not raw_catalog:
+            return None
+        catalog = json.loads(raw_catalog)
+        return [normalize_product(producto) for producto in catalog]
+    except Exception:
+        return None
+
+
+def save_catalog_to_redis(productos: list[dict]) -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        normalized = [normalize_product(producto) for producto in productos]
+        client.set(CATALOG_CACHE_KEY, json.dumps(normalized), ex=CATALOG_CACHE_TTL_SECONDS)
+    except Exception:
+        pass
+
+
+def invalidate_catalog_cache() -> None:
+    client = get_redis_client()
+    if client is None:
+        return
+    try:
+        client.delete(CATALOG_CACHE_KEY)
+    except Exception:
+        pass
+
+
 def load_profile(user: dict) -> dict | None:
     user_id = user.get("id")
     if not user_id:
@@ -411,12 +456,17 @@ def logout_user() -> None:
 
 def load_products() -> tuple[list[dict], str]:
     try:
+        cached_products = load_catalog_from_redis()
+        if cached_products:
+            return cached_products, "redis"
+
         collection = get_mongo_collection()
         if collection is None:
             return PRODUCTOS_DEMO, "demo"
-        productos = list(collection.find({}).sort("nombre", 1))
+        productos = [normalize_product(producto) for producto in collection.find({}).sort("nombre", 1)]
         if not productos:
             return PRODUCTOS_DEMO, "demo"
+        save_catalog_to_redis(productos)
         return productos, "mongodb"
     except Exception as exc:
         st.warning(f"No se pudo conectar a MongoDB. Usando catalogo demo. Detalle: {exc}")
@@ -458,6 +508,38 @@ def cart_items(productos: list[dict]) -> list[dict]:
 
 def cart_total(items: list[dict]) -> float:
     return sum(item["subtotal"] for item in items)
+
+
+def simulate_payment(metodo_pago: str, estado_pago: str) -> dict:
+    status = estado_pago if estado_pago in ESTADOS_PAGO else "Aprobado"
+    return {
+        "metodo_pago": metodo_pago if metodo_pago in METODOS_PAGO else "Tarjeta",
+        "estado_pago": status,
+        "codigo_pago": f"PAY-{str(uuid4())[:8].upper()}",
+        "fecha_pago": now_iso(),
+    }
+
+
+def record_payment_attempt(cliente: dict, payment: dict, amount: float, pedido_id: str | None = None) -> None:
+    if not has_supabase_config():
+        return
+
+    try:
+        supabase_request(
+            "POST",
+            "pagos_simulados",
+            payload={
+                "pedido_id": pedido_id,
+                "cliente_email": cliente.get("email", ""),
+                "metodo_pago": payment["metodo_pago"],
+                "estado_pago": payment["estado_pago"],
+                "codigo_pago": payment["codigo_pago"],
+                "monto": amount,
+                "fecha_pago": payment["fecha_pago"],
+            },
+        )
+    except Exception:
+        pass
 
 
 def validate_cart_stock(items: list[dict]) -> list[str]:
@@ -504,6 +586,7 @@ def discount_stock(items: list[dict]) -> None:
                 {"$inc": {"stock": int(item["cantidad"])}},
             )
         raise
+    invalidate_catalog_cache()
 
 
 def clean_cart_by_stock(productos: list[dict]) -> list[str]:
@@ -535,9 +618,12 @@ def clean_cart_by_stock(productos: list[dict]) -> list[str]:
     return warnings
 
 
-def create_order(cliente: dict, items: list[dict]) -> str:
+def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
     codigo = f"FAL-{datetime.now().strftime('%Y%m%d')}-{str(uuid4())[:8].upper()}"
     total = cart_total(items)
+    if payment.get("estado_pago") != "Aprobado":
+        record_payment_attempt(cliente, payment, total)
+        raise RuntimeError("El pago fue rechazado por la pasarela simulada. No se genero el pedido.")
     stock_errors = validate_cart_stock(items)
     if stock_errors:
         raise RuntimeError(" ".join(stock_errors))
@@ -551,6 +637,10 @@ def create_order(cliente: dict, items: list[dict]) -> str:
                 "items": items,
                 "total": total,
                 "estado": "Pendiente",
+                "metodo_pago": payment["metodo_pago"],
+                "estado_pago": payment["estado_pago"],
+                "codigo_pago": payment["codigo_pago"],
+                "fecha_pago": payment["fecha_pago"],
                 "fecha_pedido": now_iso(),
             }
         )
@@ -575,10 +665,20 @@ def create_order(cliente: dict, items: list[dict]) -> str:
     pedido_res = supabase_request(
         "POST",
         "pedidos",
-        payload={"codigo": codigo, "cliente_id": cliente_id, "total": total, "estado": "Pendiente"},
+        payload={
+            "codigo": codigo,
+            "cliente_id": cliente_id,
+            "total": total,
+            "estado": "Pendiente",
+            "metodo_pago": payment["metodo_pago"],
+            "estado_pago": payment["estado_pago"],
+            "codigo_pago": payment["codigo_pago"],
+            "fecha_pago": payment["fecha_pago"],
+        },
         prefer_return=True,
     )
     pedido_id = pedido_res[0]["id"]
+    record_payment_attempt(cliente, payment, total, pedido_id)
 
     detalle = [
         {
@@ -607,7 +707,10 @@ def load_orders() -> tuple[list[dict], str]:
         "GET",
         "pedidos",
         params={
-            "select": "id,codigo,total,estado,fecha_pedido,clientes(nombre,email,telefono,direccion)",
+            "select": (
+                "id,codigo,total,estado,metodo_pago,estado_pago,codigo_pago,fecha_pago,"
+                "fecha_pedido,clientes(nombre,email,telefono,direccion)"
+            ),
             "order": "fecha_pedido.desc",
         },
     )
@@ -637,6 +740,10 @@ def load_orders() -> tuple[list[dict], str]:
                 "items": detalles_por_pedido.get(pedido["id"], []),
                 "total": float(pedido["total"]),
                 "estado": pedido["estado"],
+                "metodo_pago": pedido.get("metodo_pago", "Tarjeta"),
+                "estado_pago": pedido.get("estado_pago", "Aprobado"),
+                "codigo_pago": pedido.get("codigo_pago", ""),
+                "fecha_pago": pedido.get("fecha_pago", ""),
                 "fecha_pedido": pedido["fecha_pedido"],
             }
         )
@@ -648,6 +755,19 @@ def load_current_user_orders(orders: list[dict]) -> list[dict]:
     if not email:
         return []
     return [order for order in orders if order["cliente"].get("email", "").lower() == email]
+
+
+def load_payment_attempts() -> list[dict]:
+    if not has_supabase_config():
+        return []
+    try:
+        return supabase_request(
+            "GET",
+            "pagos_simulados",
+            params={"select": "*", "order": "fecha_pago.desc"},
+        )
+    except Exception:
+        return []
 
 
 def update_order_status(order_id: str, estado: str) -> None:
@@ -672,6 +792,7 @@ def seed_mongodb() -> None:
         return
     for producto in PRODUCTOS_DEMO:
         collection.replace_one({"_id": producto["_id"]}, producto, upsert=True)
+    invalidate_catalog_cache()
     st.success("Catalogo semilla cargado en MongoDB.")
 
 
@@ -821,23 +942,28 @@ def render_cart(productos: list[dict]) -> None:
         email = st.text_input("Correo electronico", value=profile.get("email", ""))
         telefono = st.text_input("Telefono")
         direccion = st.text_area("Direccion de entrega")
-        submitted = st.form_submit_button("Confirmar compra")
+        st.markdown("**Pasarela de pago simulada**")
+        metodo_pago = st.selectbox("Metodo de pago", METODOS_PAGO)
+        estado_pago = st.selectbox("Resultado simulado del pago", ESTADOS_PAGO)
+        submitted = st.form_submit_button("Pagar y confirmar compra")
 
     if submitted:
         if not nombre or not email:
             st.error("Ingresa nombre y correo para generar el pedido.")
             return
         try:
+            payment = simulate_payment(metodo_pago, estado_pago)
             codigo = create_order(
                 {"nombre": nombre, "email": email, "telefono": telefono, "direccion": direccion},
                 items,
+                payment,
             )
-            st.success(f"Pedido generado correctamente: {codigo}")
+            st.success(f"Pago aprobado y pedido generado correctamente: {codigo}")
             st.rerun()
         except Exception as exc:
-            st.error("No se pudo guardar el pedido en Supabase.")
+            st.error("No se pudo completar la compra.")
             st.info(
-                "Revisa que hayas ejecutado el SQL completo, incluyendo permisos y politicas RLS. "
+                "Verifica el resultado de la pasarela simulada, el stock disponible o la conexion con Supabase. "
                 f"Detalle tecnico: {exc}"
             )
 
@@ -863,6 +989,8 @@ def render_admin(orders: list[dict]) -> None:
             "codigo": order["codigo"],
             "cliente": order["cliente"].get("nombre", ""),
             "estado": order["estado"],
+            "pago": order.get("estado_pago", "Aprobado"),
+            "metodo_pago": order.get("metodo_pago", "Tarjeta"),
             "total": money(order["total"]),
             "fecha_pedido": order["fecha_pedido"],
         }
@@ -875,6 +1003,12 @@ def render_admin(orders: list[dict]) -> None:
             st.write(f"Cliente: **{order['cliente'].get('nombre', '')}**")
             st.write(f"Email: {order['cliente'].get('email', '')}")
             st.write(f"Total: **{money(order['total'])}**")
+            st.write(
+                f"Pago: **{order.get('estado_pago', 'Aprobado')}** "
+                f"({order.get('metodo_pago', 'Tarjeta')})"
+            )
+            if order.get("codigo_pago"):
+                st.caption(f"Codigo de pago: {order['codigo_pago']}")
 
             detalle = pd.DataFrame(order["items"])
             if not detalle.empty:
@@ -909,6 +1043,10 @@ def render_my_orders(orders: list[dict]) -> None:
         with st.expander(f"{order['codigo']} - {order['estado']}"):
             st.write(f"Fecha: {order['fecha_pedido']}")
             st.write(f"Total: **{money(order['total'])}**")
+            st.write(
+                f"Pago: **{order.get('estado_pago', 'Aprobado')}** "
+                f"({order.get('metodo_pago', 'Tarjeta')})"
+            )
             detalle = pd.DataFrame(order["items"])
             if not detalle.empty:
                 detalle["precio"] = detalle["precio"].map(money)
@@ -919,19 +1057,44 @@ def render_my_orders(orders: list[dict]) -> None:
                 )
 
 
-def render_dashboard(orders: list[dict]) -> None:
+def render_dashboard(orders: list[dict], productos: list[dict], payments: list[dict]) -> None:
     st.subheader("Dashboard")
 
     total_orders = len(orders)
     pending = sum(1 for order in orders if order["estado"] == "Pendiente")
     delivered = sum(1 for order in orders if order["estado"] == "Entregado")
     sales = sum(order["total"] for order in orders)
+    avg_ticket = sales / total_orders if total_orders else 0
+    approved_payments = sum(1 for payment in payments if payment.get("estado_pago") == "Aprobado")
+    rejected_payments = sum(1 for payment in payments if payment.get("estado_pago") == "Rechazado")
+    low_stock = sum(1 for producto in productos if int(producto.get("stock", 0)) <= 5)
 
     cols = st.columns(4)
     cols[0].metric("Total de pedidos", total_orders)
     cols[1].metric("Pedidos pendientes", pending)
     cols[2].metric("Pedidos entregados", delivered)
     cols[3].metric("Ventas totales", money(sales))
+
+    cols = st.columns(4)
+    cols[0].metric("Ticket promedio", money(avg_ticket))
+    cols[1].metric("Pagos aprobados", approved_payments)
+    cols[2].metric("Pagos rechazados", rejected_payments)
+    cols[3].metric("Productos bajo stock", low_stock)
+
+    if orders:
+        status_df = pd.DataFrame(orders)
+        if "metodo_pago" not in status_df.columns:
+            status_df["metodo_pago"] = "Tarjeta"
+        left, right = st.columns(2)
+        with left:
+            st.markdown("**Pedidos por estado**")
+            by_status = status_df.groupby("estado", as_index=False)["id"].count()
+            st.bar_chart(by_status.set_index("estado"))
+        with right:
+            st.markdown("**Pagos por metodo**")
+            payment_df = pd.DataFrame(payments) if payments else status_df
+            by_payment = payment_df.groupby("metodo_pago", as_index=False)["id"].count()
+            st.bar_chart(by_payment.set_index("metodo_pago"))
 
     items = [item for order in orders for item in order["items"]]
     if not items:
@@ -957,14 +1120,21 @@ def render_data_tools(product_source: str, order_source: str) -> None:
     render_security_notices()
 
     redis_source = "Redis" if get_redis_client() is not None else "Sesion local"
+    catalog_label = {
+        "mongodb": "MongoDB",
+        "redis": "Redis cache",
+        "demo": "Demo",
+    }.get(product_source, product_source)
     cols = st.columns(4)
-    cols[0].metric("Catalogo", "MongoDB" if product_source == "mongodb" else "Demo")
+    cols[0].metric("Catalogo", catalog_label)
     cols[1].metric("Pedidos", "Supabase" if order_source == "supabase" else "Demo")
     cols[2].metric("Carrito temporal", redis_source)
     cols[3].metric("Estado operativo", "Listo")
 
     if product_source == "demo":
         st.warning("El catalogo esta usando datos demo. Revisa la conexion o los productos en MongoDB.")
+    if product_source == "redis":
+        st.info("El catalogo se esta leyendo desde Redis. MongoDB Atlas se mantiene como fuente oficial.")
     if order_source == "demo":
         st.warning("Los pedidos estan usando modo demo. Revisa la conexion de Supabase.")
     if redis_source != "Redis":
@@ -983,6 +1153,7 @@ def main() -> None:
 
     productos, product_source = load_products()
     orders, order_source = load_orders()
+    payments = load_payment_attempts()
     render_header()
     render_security_notices()
 
@@ -1017,7 +1188,7 @@ def main() -> None:
     elif page == "Pedidos administrativos":
         render_admin(orders)
     elif page == "Dashboard":
-        render_dashboard(orders)
+        render_dashboard(orders, productos, payments)
     else:
         render_data_tools(product_source, order_source)
 

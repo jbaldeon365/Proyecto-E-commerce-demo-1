@@ -5,11 +5,13 @@ grant select, insert on table perfiles to authenticated;
 grant select, insert, update on table clientes to anon, authenticated;
 grant select, insert, update on table pedidos to anon, authenticated;
 grant select, insert, update on table detalle_pedidos to anon, authenticated;
+grant select, insert on table pagos_simulados to anon, authenticated;
 
 alter table perfiles enable row level security;
 alter table clientes enable row level security;
 alter table pedidos enable row level security;
 alter table detalle_pedidos enable row level security;
+alter table pagos_simulados enable row level security;
 
 -- ============================================================
 -- Perfiles
@@ -110,4 +112,23 @@ on detalle_pedidos
 for update
 to anon, authenticated
 using (true)
+with check (true);
+
+-- ============================================================
+-- Pagos simulados
+-- ============================================================
+
+drop policy if exists "pagos_select_demo" on pagos_simulados;
+drop policy if exists "pagos_insert_demo" on pagos_simulados;
+
+create policy "pagos_select_demo"
+on pagos_simulados
+for select
+to anon, authenticated
+using (true);
+
+create policy "pagos_insert_demo"
+on pagos_simulados
+for insert
+to anon, authenticated
 with check (true);

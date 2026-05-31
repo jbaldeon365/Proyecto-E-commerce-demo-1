@@ -6,16 +6,17 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 
 - Catalogo de productos desde MongoDB, con datos flexibles por categoria.
 - Carrito de compras con agregar, quitar, subtotal, total y confirmacion.
+- Pasarela de pago simulada antes de generar el pedido.
 - Registro de pedidos con codigo, cliente, productos, cantidades, total, fecha y estado.
 - Panel administrativo para buscar, filtrar, ver detalle y actualizar estados.
-- Dashboard con pedidos, ventas simuladas, productos mas vendidos y categorias.
+- Dashboard con pedidos, ventas simuladas, pagos, productos mas vendidos, bajo stock y categorias.
 
 ## Tecnologias
 
 - Streamlit: interfaz web.
 - MongoDB: catalogo de productos.
 - Supabase: clientes, pedidos y detalle de pedidos.
-- Upstash Redis: carrito temporal por usuario.
+- Upstash Redis: carrito temporal por usuario y cache temporal del catalogo.
 - Pandas: tablas y metricas.
 
 ## Estructura
@@ -110,9 +111,9 @@ collection = "productos"
 
 Tambien puedes importar manualmente `database/productos_mongodb_seed.json` en MongoDB Compass o Atlas.
 
-## Configurar Upstash Redis para carrito temporal
+## Configurar Upstash Redis
 
-Upstash Redis es opcional, pero recomendado para mantener el carrito temporal por usuario en la nube.
+Upstash Redis es opcional, pero recomendado para mantener el carrito temporal por usuario y cachear el catalogo en la nube.
 Si no se configura, el carrito se guarda solo en la sesion activa de Streamlit.
 Si se configura, el carrito se conserva aunque el usuario recargue la pagina o vuelva a iniciar sesion.
 
@@ -131,13 +132,34 @@ url = "rediss://default:CLAVE@HOST:PUERTO"
 
 Tambien puedes configurarlo localmente en `.streamlit/secrets.toml` con el mismo formato.
 
+La app usa Redis para dos propositos:
+
+- Carrito temporal por usuario autenticado.
+- Cache temporal del catalogo consultado desde MongoDB Atlas.
+
+MongoDB Atlas se mantiene como fuente oficial del catalogo y stock. Redis solo guarda una copia temporal
+para reducir consultas repetitivas. Cuando se descuenta stock o se recarga el catalogo semilla, la app
+invalida el cache para volver a sincronizar datos desde MongoDB.
+
 La app guarda el carrito con una clave por usuario de Supabase:
 
 ```text
 cart:<id_usuario_supabase>
 ```
 
-El carrito expira despues de 24 horas.
+El carrito expira despues de 24 horas. El cache del catalogo expira despues de 5 minutos.
+
+## Pasarela de pago simulada
+
+Antes de generar un pedido, el cliente selecciona un metodo de pago y el resultado simulado:
+
+- Tarjeta
+- Yape
+- Pago contra entrega
+
+El pago puede ser `Aprobado` o `Rechazado`. Si el pago es aprobado, el sistema genera el pedido en
+Supabase y descuenta stock en MongoDB Atlas. Si el pago es rechazado, no se genera pedido, pero el
+intento queda registrado en `pagos_simulados` para que el dashboard muestre metricas de pagos.
 
 ## Modo demo
 
@@ -155,10 +177,13 @@ flowchart TD
     A[Cliente] --> B[Ingresa a la plataforma ecommerce]
     B --> C[Visualiza productos disponibles]
     C --> D[Agrega productos al carrito]
-    D --> E[Confirma la compra]
-    E --> F[Se genera un pedido]
+    D --> R[Carrito temporal en Upstash Redis]
+    D --> E[Pasarela de pago simulada]
+    E -->|Pago aprobado| F[Se genera un pedido]
+    E -->|Pago rechazado| P[Se registra intento de pago]
     F --> G[El pedido se almacena en Supabase]
-    C --> H[Catalogo consultado desde MongoDB]
+    C --> H[Catalogo consultado desde Redis o MongoDB]
+    H --> M[MongoDB Atlas como fuente oficial]
     G --> I[Area administrativa revisa el pedido]
     I --> J[Se actualiza el estado del pedido]
     J --> K[Dashboard muestra reportes y metricas]
