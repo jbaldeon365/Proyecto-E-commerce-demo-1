@@ -18,7 +18,6 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 - Supabase: clientes, pedidos y detalle de pedidos.
 - Upstash Redis: carrito temporal por usuario y cache temporal del catalogo.
 - Supabase Edge Functions: procesamiento automatico de pedidos.
-- GitHub Actions: ejecucion programada de la Edge Function.
 - Pandas: tablas y metricas.
 
 ## Estructura
@@ -31,8 +30,6 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 ├── .gitignore
 ├── .streamlit/
 │   └── secrets.toml.example
-├── .github/
-│   └── workflows/procesar-pedidos.yml
 ├── supabase/
 │   └── functions/procesar-pedidos/index.ts
 └── database/
@@ -100,7 +97,7 @@ where email = 'admin@correo.com';
 Los usuarios nuevos se crean como `cliente`. El admin puede ver el panel administrativo,
 dashboard y configuracion; el cliente puede comprar y consultar sus pedidos.
 
-## Automatizacion de pedidos con Supabase Edge Function
+## Automatizacion de pedidos con Supabase
 
 La app incluye una funcion SQL llamada `procesar_pedidos_automaticos()` y una Edge Function en
 `supabase/functions/procesar-pedidos/index.ts`.
@@ -135,18 +132,9 @@ Cancelado
 7. Despliega la funcion.
 8. Prueba desde el panel administrativo con `Ejecutar procesamiento automatico`.
 
-### Paso a paso en GitHub
-
-El archivo `.github/workflows/procesar-pedidos.yml` llama la Edge Function cada 15 minutos.
-
-En GitHub crea estos secretos en `Settings > Secrets and variables > Actions`:
-
-```text
-SUPABASE_EDGE_FUNCTION_URL=https://TU-PROYECTO.supabase.co/functions/v1/procesar-pedidos
-SUPABASE_EDGE_FUNCTION_TOKEN=TU_TOKEN_PARA_INVOCAR_LA_FUNCION
-```
-
-Luego entra a `Actions > Procesar pedidos automaticos > Run workflow` para probarlo manualmente.
+Si tu plan de Supabase permite programar tareas, configura un cron/scheduler para invocar la Edge Function
+periodicamente. Si no esta disponible, la automatizacion queda lista para ejecutarse desde el panel admin
+como parte de la demo academica.
 
 ## Configurar MongoDB
 
