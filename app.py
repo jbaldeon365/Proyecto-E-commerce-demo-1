@@ -798,6 +798,38 @@ def evaluate_order_review(cliente: dict, total: float, payment: dict) -> tuple[b
     return False, ""
 
 
+def get_or_save_customer(cliente: dict) -> str:
+    email = cliente["email"].strip().lower()
+    payload = {
+        "nombre": cliente["nombre"].strip(),
+        "email": email,
+        "telefono": cliente.get("telefono", "").strip(),
+        "direccion": cliente.get("direccion", "").strip(),
+    }
+    existing = supabase_request(
+        "GET",
+        "clientes",
+        params={"select": "id", "email": f"eq.{email}", "limit": 1},
+    )
+    if existing:
+        cliente_id = existing[0]["id"]
+        supabase_request(
+            "PATCH",
+            "clientes",
+            params={"id": f"eq.{cliente_id}"},
+            payload=payload,
+        )
+        return cliente_id
+
+    cliente_res = supabase_request(
+        "POST",
+        "clientes",
+        payload=payload,
+        prefer_return=True,
+    )
+    return cliente_res[0]["id"]
+
+
 def discount_stock(items: list[dict]) -> None:
     collection = get_mongo_collection()
     if collection is None:
@@ -889,18 +921,7 @@ def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
         clear_cart_from_redis()
         return codigo
 
-    cliente_res = supabase_request(
-        "POST",
-        "clientes",
-        payload={
-            "nombre": cliente["nombre"],
-            "email": cliente["email"],
-            "telefono": cliente.get("telefono", ""),
-            "direccion": cliente.get("direccion", ""),
-        },
-        prefer_return=True,
-    )
-    cliente_id = cliente_res[0]["id"]
+    cliente_id = get_or_save_customer(cliente)
 
     pedido_res = supabase_request(
         "POST",

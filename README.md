@@ -7,7 +7,7 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 - Catalogo de productos desde MongoDB, con datos flexibles por categoria.
 - Carrito de compras con agregar, quitar, subtotal, total y confirmacion.
 - Pasarela de pago simulada antes de generar el pedido.
-- Registro de pedidos con codigo, cliente, productos, cantidades, total, fecha y estado.
+- Registro de pedidos con codigo, cliente unico por correo, productos, cantidades, total, fecha y estado.
 - Panel administrativo para buscar, filtrar, ver detalle, resolver excepciones y actualizar estados.
 - Dashboard con pedidos, ventas simuladas, pagos, productos mas vendidos, bajo stock y categorias.
 
@@ -127,11 +127,19 @@ Cancelado
    - `motivo_revision`
    - `actualizado_por`
    - `fecha_actualizacion_estado`
-4. En `Edge Functions`, crea una funcion llamada `procesar-pedidos`.
-5. Copia el contenido de `supabase/functions/procesar-pedidos/index.ts`.
-6. En `Settings > Edge Functions > Secrets`, confirma que existan `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`.
-7. Despliega la funcion.
-8. Verifica los cambios de estado desde el panel administrativo o consultando la tabla `pedidos`.
+4. Verifica que `clientes.email` tenga indice unico:
+
+```sql
+select indexname, indexdef
+from pg_indexes
+where tablename = 'clientes'
+  and indexname = 'idx_clientes_email_unique';
+```
+5. En `Edge Functions`, crea una funcion llamada `procesar-pedidos`.
+6. Copia el contenido de `supabase/functions/procesar-pedidos/index.ts`.
+7. En `Settings > Edge Functions > Secrets`, confirma que existan `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`.
+8. Despliega la funcion.
+9. Verifica los cambios de estado desde el panel administrativo o consultando la tabla `pedidos`.
 
 ### Cron automatico en Supabase
 

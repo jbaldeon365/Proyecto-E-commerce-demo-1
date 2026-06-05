@@ -24,8 +24,11 @@ create table if not exists clientes (
   email text not null,
   telefono text,
   direccion text,
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
+
+alter table clientes add column if not exists updated_at timestamptz not null default now();
 
 -- ============================================================
 -- Tabla: pedidos
@@ -150,6 +153,59 @@ create index if not exists idx_detalle_pedido_id on detalle_pedidos (pedido_id);
 create index if not exists idx_perfiles_rol on perfiles (rol);
 create index if not exists idx_pagos_estado_pago on pagos_simulados (estado_pago);
 create index if not exists idx_pagos_metodo_pago on pagos_simulados (metodo_pago);
+
+-- ============================================================
+-- Normalizacion de clientes
+-- Un cliente se identifica por correo. Si ya existen duplicados,
+-- los pedidos se reasignan al cliente mas antiguo y se elimina
+-- el resto antes de crear la restriccion unica.
+-- ============================================================
+
+with ranked as (
+  select
+    id,
+    lower(trim(email)) as normalized_email,
+    first_value(id) over (
+      partition by lower(trim(email))
+      order by created_at asc, id asc
+    ) as keeper_id,
+    row_number() over (
+      partition by lower(trim(email))
+      order by created_at asc, id asc
+    ) as rn
+  from clientes
+),
+duplicates as (
+  select id, keeper_id
+  from ranked
+  where rn > 1
+)
+update pedidos
+set cliente_id = duplicates.keeper_id
+from duplicates
+where pedidos.cliente_id = duplicates.id;
+
+with ranked as (
+  select
+    id,
+    row_number() over (
+      partition by lower(trim(email))
+      order by created_at asc, id asc
+    ) as rn
+  from clientes
+)
+delete from clientes
+using ranked
+where clientes.id = ranked.id
+  and ranked.rn > 1;
+
+update clientes
+set
+  email = lower(trim(email)),
+  updated_at = now()
+where email <> lower(trim(email));
+
+create unique index if not exists idx_clientes_email_unique on clientes (email);
 
 -- ============================================================
 -- Permisos para usar Supabase desde Streamlit con anon/public key
@@ -344,7 +400,12 @@ values
     '999999999',
     'Av. Demo 123, Lima'
   )
-on conflict (id) do nothing;
+on conflict (email) do update
+set
+  nombre = excluded.nombre,
+  telefono = excluded.telefono,
+  direccion = excluded.direccion,
+  updated_at = now();
 
 insert into pedidos (
   id,
