@@ -34,6 +34,7 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 │   └── functions/procesar-pedidos/index.ts
 └── database/
     ├── productos_mongodb_seed.json
+    ├── supabase_cron_job.sql
     ├── supabase_schema.sql
     ├── supabase_rls_policies.sql
     └── supabase_auth_schema.sql
@@ -130,11 +131,30 @@ Cancelado
 5. Copia el contenido de `supabase/functions/procesar-pedidos/index.ts`.
 6. En `Settings > Edge Functions > Secrets`, confirma que existan `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`.
 7. Despliega la funcion.
-8. Prueba desde el panel administrativo con `Ejecutar procesamiento automatico`.
+8. Verifica los cambios de estado desde el panel administrativo o consultando la tabla `pedidos`.
 
-Si tu plan de Supabase permite programar tareas, configura un cron/scheduler para invocar la Edge Function
-periodicamente. Si no esta disponible, la automatizacion queda lista para ejecutarse desde el panel admin
-como parte de la demo academica.
+### Cron automatico en Supabase
+
+Para que el cambio de estados sea automatico:
+
+1. Entra a `SQL Editor`.
+2. Ejecuta el archivo `database/supabase_cron_job.sql`.
+3. Verifica que el job quedo creado con:
+
+```sql
+select jobid, jobname, schedule, command, active
+from cron.job
+where jobname = 'procesar-pedidos-automaticos';
+```
+
+El cron ejecuta esta tarea cada 1 minuto:
+
+```text
+procesar_pedidos_automaticos()
+```
+
+El panel administrativo queda enfocado en consultar pedidos y resolver excepciones. El procesamiento normal
+lo ejecuta Supabase automaticamente.
 
 ## Configurar MongoDB
 

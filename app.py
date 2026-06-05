@@ -1045,22 +1045,6 @@ def update_order_status(order_id: str, estado: str, motivo_revision: str = "") -
         )
 
 
-def run_automatic_order_processing() -> dict:
-    if not has_supabase_config():
-        return {"actualizados": 0}
-    result = supabase_request(
-        "POST",
-        "rpc/procesar_pedidos_automaticos",
-        payload={},
-        prefer_return=True,
-    )
-    if isinstance(result, list) and result:
-        return result[0]
-    if isinstance(result, dict):
-        return result
-    return {"actualizados": 0}
-
-
 def seed_mongodb() -> None:
     collection = get_mongo_collection()
     if collection is None:
@@ -1310,20 +1294,6 @@ def render_admin(orders: list[dict]) -> None:
         st.info("Aun no hay pedidos registrados.")
         return
 
-    with st.container(border=True):
-        st.markdown("**Automatizacion operativa**")
-        st.write(
-            "Procesa pedidos aprobados sin observaciones y deja detenidos los casos con pago, datos "
-            "o revision administrativa pendiente."
-        )
-        if st.button("Ejecutar procesamiento automatico", type="primary"):
-            try:
-                result = run_automatic_order_processing()
-                st.success(f"Procesamiento ejecutado. Pedidos actualizados: {result.get('actualizados', 0)}.")
-                st.rerun()
-            except Exception as exc:
-                st.error(f"No se pudo ejecutar la automatizacion. {exc}")
-
     st.markdown("**Filtros de busqueda**")
     col1, col2, col3 = st.columns(3)
     search = col1.text_input("Buscar codigo o cliente", placeholder="FAL-..., nombre o correo")
@@ -1389,6 +1359,10 @@ def render_admin(orders: list[dict]) -> None:
 
     if len(filtered) > len(visible_orders):
         st.caption(f"Mostrando {len(visible_orders)} de {len(filtered)} pedidos filtrados.")
+
+    if not search.strip():
+        st.info("Ingresa un codigo de pedido, nombre o correo para ver el detalle y actualizar su estado.")
+        return
 
     st.markdown("**Detalle y actualizacion de estado**")
     if not filtered:
