@@ -318,6 +318,10 @@ def current_user_id() -> str:
     return user.get("id", "")
 
 
+def current_email() -> str:
+    return current_profile().get("email", "").strip().lower()
+
+
 def redis_cart_key() -> str:
     user_id = current_user_id()
     return f"cart:{user_id}" if user_id else ""
@@ -434,6 +438,21 @@ def create_profile(user: dict, nombre: str, rol: str = "cliente") -> dict:
     }
     result = supabase_request("POST", "perfiles", payload=profile, prefer_return=True)
     return result[0]
+
+
+def update_current_profile_name(nombre: str) -> None:
+    user_id = current_user_id()
+    if not user_id:
+        return
+    supabase_request(
+        "PATCH",
+        "perfiles",
+        params={"id": f"eq.{user_id}"},
+        payload={"nombre": nombre.strip(), "updated_at": now_iso()},
+    )
+    profile = current_profile().copy()
+    profile["nombre"] = nombre.strip()
+    st.session_state.current_profile = profile
 
 
 def login_user(email: str, password: str) -> None:
@@ -805,6 +824,7 @@ def get_or_save_customer(cliente: dict) -> str:
         "email": email,
         "telefono": cliente.get("telefono", "").strip(),
         "direccion": cliente.get("direccion", "").strip(),
+        "updated_at": now_iso(),
     }
     existing = supabase_request(
         "GET",
@@ -828,6 +848,32 @@ def get_or_save_customer(cliente: dict) -> str:
         prefer_return=True,
     )
     return cliente_res[0]["id"]
+
+
+def load_customer_by_email(email: str) -> dict:
+    normalized_email = email.strip().lower()
+    if not normalized_email or not has_supabase_config():
+        return {}
+    clientes = supabase_request(
+        "GET",
+        "clientes",
+        params={"select": "*", "email": f"eq.{normalized_email}", "limit": 1},
+    )
+    return clientes[0] if clientes else {}
+
+
+def save_current_customer_profile(nombre: str, telefono: str, direccion: str) -> None:
+    email = current_email()
+    if not email:
+        raise RuntimeError("No se encontro el correo del usuario autenticado.")
+    get_or_save_customer(
+        {
+            "nombre": nombre,
+            "email": email,
+            "telefono": telefono,
+            "direccion": direccion,
+        }
+    )
 
 
 def discount_stock(items: list[dict]) -> None:
@@ -1270,11 +1316,12 @@ def render_cart(productos: list[dict]) -> None:
         st.markdown("**Datos de entrega**")
         st.caption("Completa los datos del cliente antes de pasar a la pasarela de pago.")
         profile = current_profile()
+        customer_profile = load_customer_by_email(profile.get("email", ""))
         with st.form("checkout_customer_form"):
-            nombre = st.text_input("Nombre completo", value=profile.get("nombre", ""))
-            email = st.text_input("Correo electronico", value=profile.get("email", ""))
-            telefono = st.text_input("Telefono")
-            direccion = st.text_area("Direccion de entrega")
+            nombre = st.text_input("Nombre completo", value=customer_profile.get("nombre") or profile.get("nombre", ""))
+            email = st.text_input("Correo electronico", value=profile.get("email", ""), disabled=True)
+            telefono = st.text_input("Telefono", value=customer_profile.get("telefono", ""))
+            direccion = st.text_area("Direccion de entrega", value=customer_profile.get("direccion", ""))
             col_back, col_pay = st.columns(2)
             back = col_back.form_submit_button("Volver al carrito", use_container_width=True)
             submitted = col_pay.form_submit_button("Pagar", type="primary", use_container_width=True)
@@ -1284,6 +1331,7 @@ def render_cart(productos: list[dict]) -> None:
             st.rerun()
 
         if submitted:
+            email = profile.get("email", "")
             if not nombre or not email:
                 st.error("Ingresa nombre y correo para generar el pedido.")
                 return
@@ -1466,6 +1514,37 @@ def render_my_orders(orders: list[dict]) -> None:
                 )
 
 
+def render_customer_profile() -> None:
+    st.subheader("Mi perfil")
+    st.caption("Administra tus datos de contacto y entrega. El correo se mantiene como identificador de la cuenta.")
+
+    profile = current_profile()
+    email = profile.get("email", "")
+    customer_profile = load_customer_by_email(email)
+
+    with st.form("customer_profile_form"):
+        nombre = st.text_input("Nombre completo", value=customer_profile.get("nombre") or profile.get("nombre", ""))
+        st.text_input("Correo electronico", value=email, disabled=True)
+        telefono = st.text_input("Telefono", value=customer_profile.get("telefono", ""))
+        direccion = st.text_area("Direccion principal de entrega", value=customer_profile.get("direccion", ""))
+        submitted = st.form_submit_button("Guardar perfil", type="primary")
+
+    if submitted:
+        if not nombre.strip():
+            st.error("Ingresa tu nombre completo.")
+            return
+        if telefono and not telefono.strip().isdigit():
+            st.error("El telefono debe contener solo numeros.")
+            return
+        try:
+            update_current_profile_name(nombre)
+            save_current_customer_profile(nombre, telefono, direccion)
+            st.success("Perfil actualizado correctamente.")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"No se pudo actualizar el perfil. {exc}")
+
+
 def render_dashboard(orders: list[dict], productos: list[dict], payments: list[dict]) -> None:
     st.subheader("Dashboard")
 
@@ -1578,7 +1657,7 @@ def main() -> None:
     if role == "admin":
         pages = ["Pedidos administrativos", "Dashboard", "Configuracion"]
     else:
-        pages = ["Catalogo", "Carrito", "Mis pedidos"]
+        pages = ["Catalogo", "Carrito", "Mis pedidos", "Mi perfil"]
 
     page = st.sidebar.radio(
         "Modulos del sistema",
@@ -1595,6 +1674,8 @@ def main() -> None:
         render_cart(productos)
     elif page == "Mis pedidos":
         render_my_orders(orders)
+    elif page == "Mi perfil":
+        render_customer_profile()
     elif page == "Pedidos administrativos":
         render_admin(orders)
     elif page == "Dashboard":

@@ -9,6 +9,7 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 - Pasarela de pago simulada antes de generar el pedido.
 - Registro de pedidos con codigo, cliente unico por correo, productos, cantidades, total, fecha y estado.
 - Panel administrativo para buscar, filtrar, ver detalle, resolver excepciones y actualizar estados.
+- Perfil del cliente para mantener nombre, telefono y direccion principal.
 - Dashboard con pedidos, ventas simuladas, pagos, productos mas vendidos, bajo stock y categorias.
 
 ## Tecnologias
@@ -97,6 +98,17 @@ where email = 'admin@correo.com';
 
 Los usuarios nuevos se crean como `cliente`. El admin puede ver el panel administrativo,
 dashboard y configuracion; el cliente puede comprar y consultar sus pedidos.
+
+## Perfil del cliente
+
+El cliente cuenta con el modulo `Mi perfil`, donde puede actualizar:
+
+- Nombre completo
+- Telefono
+- Direccion principal de entrega
+
+El correo electronico se muestra en solo lectura porque se mantiene como identificador de Supabase Auth.
+Cuando el cliente compra, el checkout carga automaticamente estos datos para evitar que los escriba de nuevo.
 
 ## Automatizacion de pedidos con Supabase
 

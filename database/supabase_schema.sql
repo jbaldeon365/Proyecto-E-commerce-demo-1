@@ -10,8 +10,11 @@ create table if not exists perfiles (
   nombre text not null,
   email text not null,
   rol text not null default 'cliente' check (rol in ('cliente', 'admin')),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
+
+alter table perfiles add column if not exists updated_at timestamptz not null default now();
 
 -- ============================================================
 -- Tabla: clientes
@@ -214,7 +217,7 @@ create unique index if not exists idx_clientes_email_unique on clientes (email);
 
 grant usage on schema public to anon, authenticated;
 revoke update on perfiles from anon, authenticated;
-grant select, insert on perfiles to authenticated;
+grant select, insert, update on perfiles to authenticated;
 grant select, insert, update on clientes to anon, authenticated;
 grant select, insert, update on pedidos to anon, authenticated;
 grant select, insert, update on detalle_pedidos to anon, authenticated;
@@ -312,6 +315,12 @@ using (auth.uid() = id);
 create policy "perfiles_insert_demo"
 on perfiles for insert
 to authenticated
+with check (auth.uid() = id and rol = 'cliente');
+
+create policy "perfiles_update_demo"
+on perfiles for update
+to authenticated
+using (auth.uid() = id)
 with check (auth.uid() = id and rol = 'cliente');
 
 drop policy if exists "clientes_select_demo" on clientes;

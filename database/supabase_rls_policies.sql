@@ -1,7 +1,7 @@
 grant usage on schema public to anon, authenticated;
 
 revoke update on table perfiles from anon, authenticated;
-grant select, insert on table perfiles to authenticated;
+grant select, insert, update on table perfiles to authenticated;
 grant select, insert, update on table clientes to anon, authenticated;
 grant select, insert, update on table pedidos to anon, authenticated;
 grant select, insert, update on table detalle_pedidos to anon, authenticated;
@@ -32,6 +32,13 @@ create policy "perfiles_insert_demo"
 on perfiles
 for insert
 to authenticated
+with check (auth.uid() = id and rol = 'cliente');
+
+create policy "perfiles_update_demo"
+on perfiles
+for update
+to authenticated
+using (auth.uid() = id)
 with check (auth.uid() = id and rol = 'cliente');
 
 -- ============================================================
