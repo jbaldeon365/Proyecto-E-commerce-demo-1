@@ -30,6 +30,10 @@ CATALOG_CACHE_KEY = "catalogo:productos"
 CATALOG_CACHE_TTL_SECONDS = 300
 LIMA_TZ = ZoneInfo("America/Lima")
 MONTO_REVISION_ADMIN = 5000
+MESES_ES = [
+    "enero", "febrero", "marzo", "abril", "mayo", "junio",
+    "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
+]
 
 PRODUCTOS_DEMO = [
     {
@@ -299,6 +303,51 @@ def format_lima_datetime(value: str) -> str:
         return parsed.astimezone(LIMA_TZ).strftime("%d/%m/%Y %H:%M")
     except Exception:
         return value
+
+
+def format_lima_date_friendly(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        normalized = value.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        lima = parsed.astimezone(LIMA_TZ)
+        return f"{lima.day} de {MESES_ES[lima.month - 1]}"
+    except Exception:
+        return value
+
+
+def order_status_icon(estado: str) -> str:
+    return {
+        "Pendiente": "\U0001f7e1",
+        "Procesando": "\U0001f535",
+        "Enviado": "\U0001f69a",
+        "Entregado": "\u2705",
+        "Cancelado": "\u274c",
+        "Pago pendiente": "\u23f3",
+        "Observado": "\u26a0\ufe0f",
+        "Revision administrativa": "\U0001f50d",
+    }.get(estado, "\U0001f4cb")
+
+
+def order_status_message(order: dict) -> str:
+    estado = order["estado"]
+    if estado == "Pendiente":
+        return "Tu pedido esta siendo preparado."
+    if estado == "Procesando":
+        return "Tu pedido esta en proceso de despacho."
+    if estado == "Enviado":
+        return "Tu pedido esta en camino."
+    if estado == "Entregado":
+        fecha = format_lima_date_friendly(order.get("fecha_actualizacion_estado", ""))
+        return f"Entregado el {fecha}." if fecha else "Pedido entregado."
+    if estado == "Cancelado":
+        return "Este pedido fue cancelado."
+    if order.get("motivo_revision"):
+        return order["motivo_revision"]
+    return "Tu pedido requiere revision administrativa."
 
 
 def current_profile() -> dict:
@@ -1486,7 +1535,7 @@ def render_admin(orders: list[dict]) -> None:
                 st.rerun()
 
 
-def render_my_orders(orders: list[dict]) -> None:
+def render_my_orders(orders: list[dict], productos: list[dict]) -> None:
     st.subheader("Mis pedidos")
     user_orders = load_current_user_orders(orders)
 
@@ -1494,24 +1543,81 @@ def render_my_orders(orders: list[dict]) -> None:
         st.info("Aun no tienes pedidos registrados con tu correo.")
         return
 
-    for order in user_orders:
-        with st.expander(f"{order['codigo']} - {order['estado']}"):
-            st.write(f"Fecha: {format_lima_datetime(order['fecha_pedido'])}")
-            st.write(f"Total: **{money(order['total'])}**")
-            st.write(
-                f"Pago: **{order.get('estado_pago', 'Aprobado')}** "
-                f"({order.get('metodo_pago', 'Tarjeta')})"
-            )
-            if order.get("requiere_revision") or order.get("motivo_revision"):
-                st.warning(order.get("motivo_revision") or "Tu pedido requiere revision administrativa.")
-            detalle = pd.DataFrame(order["items"])
-            if not detalle.empty:
-                detalle["precio"] = detalle["precio"].map(money)
-                detalle["subtotal"] = detalle["subtotal"].map(money)
-                st.dataframe(
-                    detalle[["nombre", "categoria", "precio", "cantidad", "subtotal"]],
-                    use_container_width=True,
+    busqueda = st.text_input("Buscar por N° de pedido", placeholder="FAL-20260605...")
+
+    filtered = user_orders
+    if busqueda:
+        query = busqueda.lower()
+        filtered = [o for o in filtered if query in o["codigo"].lower()]
+
+    if not filtered:
+        st.info("No se encontraron pedidos con ese numero.")
+        return
+
+    st.caption(f"{len(filtered)} pedido(s)")
+
+    img_map = {product_id(p): p.get("imagen", "") for p in productos}
+
+    for order in filtered:
+        with st.container(border=True):
+            col_date, col_total = st.columns([4, 1])
+            with col_date:
+                st.markdown(f"**{format_lima_date_friendly(order['fecha_pedido'])}**")
+            with col_total:
+                st.markdown(
+                    f"<p style='text-align:right'><b>{money(order['total'])}</b></p>",
+                    unsafe_allow_html=True,
                 )
+
+            st.markdown(f"Pedido N° **{order['codigo']}**")
+
+            icon = order_status_icon(order["estado"])
+            message = order_status_message(order)
+            st.markdown(f"{icon} **{order['estado']}**")
+            st.caption(message)
+
+            st.divider()
+            items = order.get("items", [])
+            for item in items[:3]:
+                col_img, col_info, col_qty = st.columns([0.8, 4, 1])
+                with col_img:
+                    img = img_map.get(item["producto_id"], "")
+                    if img:
+                        st.image(img, width=55)
+                with col_info:
+                    st.markdown(f"**{item['nombre']}**")
+                    st.caption(f"{item['categoria']} \u00b7 {money(item['precio'])}")
+                with col_qty:
+                    st.caption(f"x{item['cantidad']}")
+
+            remaining = len(items) - 3
+            if remaining > 0:
+                st.caption(f"+{remaining} producto(s) mas")
+
+            st.divider()
+            pago_icon = "\u2705" if order.get("estado_pago") == "Aprobado" else "\u274c"
+            st.caption(
+                f"Pago: {pago_icon} {order.get('estado_pago', 'Aprobado')} \u00b7 "
+                f"{order.get('metodo_pago', 'Tarjeta')}"
+            )
+
+            with st.expander("Revisar detalle"):
+                st.write(f"**Fecha completa:** {format_lima_datetime(order['fecha_pedido'])}")
+                st.write(f"**Metodo de pago:** {order.get('metodo_pago', 'Tarjeta')}")
+                st.write(f"**Estado de pago:** {order.get('estado_pago', 'Aprobado')}")
+                if order.get("codigo_pago"):
+                    st.write(f"**Codigo de pago:** {order['codigo_pago']}")
+                if order.get("fecha_pago"):
+                    st.write(f"**Fecha de pago:** {format_lima_datetime(order['fecha_pago'])}")
+                detalle = pd.DataFrame(items)
+                if not detalle.empty:
+                    detalle["precio"] = detalle["precio"].map(money)
+                    detalle["subtotal"] = detalle["subtotal"].map(money)
+                    st.dataframe(
+                        detalle[["nombre", "categoria", "precio", "cantidad", "subtotal"]],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
 
 
 def render_customer_profile() -> None:
@@ -1673,7 +1779,7 @@ def main() -> None:
     elif page == "Carrito":
         render_cart(productos)
     elif page == "Mis pedidos":
-        render_my_orders(orders)
+        render_my_orders(orders, productos)
     elif page == "Mi perfil":
         render_customer_profile()
     elif page == "Pedidos administrativos":
