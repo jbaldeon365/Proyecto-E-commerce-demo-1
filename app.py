@@ -1325,6 +1325,12 @@ def render_cart(productos: list[dict]) -> None:
     items = cart_items(productos)
 
     if not items:
+        if st.session_state.get("show_payment_gateway"):
+            render_payment_gateway()
+            return
+        if st.session_state.get("show_order_confirmation"):
+            render_order_confirmation()
+            return
         st.session_state.checkout_step = "cart"
         st.info("El carrito esta vacio. Agrega productos desde el catalogo.")
         return
@@ -1423,6 +1429,8 @@ def render_cart(productos: list[dict]) -> None:
             st.session_state.payment_step = 1
             st.session_state.payment_details = {}
             st.session_state.simulate_payment_rejection = False
+            st.session_state.show_order_confirmation = False
+            st.session_state.order_confirmation = {}
             st.session_state.show_payment_gateway = True
             st.rerun()
 
