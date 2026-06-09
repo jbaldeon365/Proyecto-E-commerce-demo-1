@@ -1591,23 +1591,12 @@ def render_admin(orders: list[dict]) -> None:
         return
 
     st.markdown("**Filtros de busqueda**")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns([2.2, 1.4, 1.4, 1])
     search = sanitize_search(col1.text_input("Buscar codigo o cliente", placeholder="FAL-..., nombre o correo"))
     status = col2.selectbox("Estado del pedido", ["Todos"] + ESTADOS)
-    payment_status = col3.selectbox("Estado de pago", ["Todos"] + ESTADOS_PAGO)
-
-    col4, col5, col6 = st.columns(3)
     payment_methods = sorted({order.get("metodo_pago", "Tarjeta") for order in orders})
-    payment_method = col4.selectbox("Metodo de pago", ["Todos"] + payment_methods)
-    clientes = sorted(
-        {
-            order["cliente"].get("nombre", "").strip()
-            for order in orders
-            if order["cliente"].get("nombre", "").strip()
-        }
-    )
-    cliente_filter = col5.selectbox("Cliente", ["Todos"] + clientes)
-    limit = col6.selectbox("Mostrar", [10, 25, 50, 100, "Todos"], index=1)
+    payment_method = col3.selectbox("Metodo de pago", ["Todos"] + payment_methods)
+    limit = col4.selectbox("Mostrar", [10, 25, 50, 100, "Todos"], index=1)
 
     filtered = orders
     if search:
@@ -1621,12 +1610,8 @@ def render_admin(orders: list[dict]) -> None:
         ]
     if status != "Todos":
         filtered = [order for order in filtered if order["estado"] == status]
-    if payment_status != "Todos":
-        filtered = [order for order in filtered if order.get("estado_pago", "Aprobado") == payment_status]
     if payment_method != "Todos":
         filtered = [order for order in filtered if order.get("metodo_pago", "Tarjeta") == payment_method]
-    if cliente_filter != "Todos":
-        filtered = [order for order in filtered if order["cliente"].get("nombre", "") == cliente_filter]
 
     filtered = sorted(filtered, key=lambda order: order.get("fecha_pedido", ""), reverse=True)
     visible_orders = filtered if limit == "Todos" else filtered[: int(limit)]
@@ -1858,14 +1843,19 @@ def render_dashboard(orders: list[dict], productos: list[dict], payments: list[d
     total_payments = approved_payments + rejected_payments
     approval_rate = (approved_payments / total_payments * 100) if total_payments else 0
     low_stock = sum(1 for producto in productos if int(producto.get("stock", 0)) <= 5)
+    items = [item for order in orders for item in order["items"]]
+    status_df = pd.DataFrame(orders) if orders else pd.DataFrame()
+    items_df = pd.DataFrame(items) if items else pd.DataFrame()
+    payments_df = pd.DataFrame(payments) if payments else pd.DataFrame()
 
-    st.markdown("**Resumen operativo**")
+    st.markdown("**Resumen ejecutivo**")
     cols = st.columns(4)
     cols[0].metric("Total de pedidos", total_orders)
     cols[1].metric("Ventas totales", money(sales))
     cols[2].metric("Ticket promedio", money(avg_ticket))
     cols[3].metric("Tasa de aprobacion", f"{approval_rate:.0f}%")
 
+    st.markdown("**Estado operativo de pedidos**")
     cols = st.columns(4)
     cols[0].metric("Pendientes", pending)
     cols[1].metric("En proceso", processing)
@@ -1880,24 +1870,30 @@ def render_dashboard(orders: list[dict], productos: list[dict], payments: list[d
 
     if orders:
         st.divider()
-        st.markdown("**Graficas operativas**")
-        status_df = pd.DataFrame(orders)
+        st.markdown("**Analisis de pedidos**")
         if "metodo_pago" not in status_df.columns:
             status_df["metodo_pago"] = "Tarjeta"
 
-        left, right = st.columns(2)
-        with left:
+        col_status, col_revision, col_ticket = st.columns(3)
+        with col_status:
             st.markdown("Pedidos por estado")
             by_status = status_df.groupby("estado", as_index=False)["id"].count()
             by_status.columns = ["Estado", "Cantidad"]
             st.bar_chart(by_status.set_index("Estado"))
-        with right:
-            st.markdown("Pagos por metodo")
-            payment_df = pd.DataFrame(payments) if payments else status_df
-            if "metodo_pago" in payment_df.columns and "id" in payment_df.columns:
-                by_payment = payment_df.groupby("metodo_pago", as_index=False)["id"].count()
-                by_payment.columns = ["Metodo", "Cantidad"]
-                st.bar_chart(by_payment.set_index("Metodo"))
+        with col_revision:
+            st.markdown("Pedidos normales vs revision")
+            review_df = pd.DataFrame(
+                [
+                    {"Tipo": "Flujo normal", "Cantidad": total_orders - review_orders},
+                    {"Tipo": "Revision administrativa", "Cantidad": review_orders},
+                ]
+            )
+            st.bar_chart(review_df.set_index("Tipo"))
+        with col_ticket:
+            st.markdown("Ventas por estado")
+            by_status_sales = status_df.groupby("estado", as_index=False)["total"].sum()
+            by_status_sales.columns = ["Estado", "Venta"]
+            st.bar_chart(by_status_sales.set_index("Estado"))
 
         try:
             dates_df = status_df.copy()
@@ -1914,33 +1910,80 @@ def render_dashboard(orders: list[dict], productos: list[dict], payments: list[d
 
             left, right = st.columns(2)
             with left:
-                st.markdown("Pedidos por dia")
+                st.markdown("Evolucion de pedidos por dia")
                 st.line_chart(daily.set_index("fecha")["pedidos"])
             with right:
-                st.markdown("Ventas por dia")
+                st.markdown("Evolucion de ventas por dia")
                 st.line_chart(daily.set_index("fecha")["ventas"])
         except Exception:
             pass
 
-    items = [item for order in orders for item in order["items"]]
+    if payments or orders:
+        st.divider()
+        st.markdown("**Analisis de pagos**")
+        payment_source = payments_df if not payments_df.empty else status_df
+        pay_col1, pay_col2, pay_col3 = st.columns(3)
+        with pay_col1:
+            st.markdown("Pagos por metodo")
+            if "metodo_pago" in payment_source.columns and "id" in payment_source.columns:
+                by_payment = payment_source.groupby("metodo_pago", as_index=False)["id"].count()
+                by_payment.columns = ["Metodo", "Cantidad"]
+                st.bar_chart(by_payment.set_index("Metodo"))
+        with pay_col2:
+            st.markdown("Pagos aprobados vs rechazados")
+            if not payments_df.empty and "estado_pago" in payments_df.columns:
+                by_payment_status = payments_df.groupby("estado_pago", as_index=False)["id"].count()
+                by_payment_status.columns = ["Estado", "Cantidad"]
+                st.bar_chart(by_payment_status.set_index("Estado"))
+            else:
+                fallback_payments = pd.DataFrame(
+                    [
+                        {"Estado": "Aprobado", "Cantidad": approved_payments},
+                        {"Estado": "Rechazado", "Cantidad": rejected_payments},
+                    ]
+                )
+                st.bar_chart(fallback_payments.set_index("Estado"))
+        with pay_col3:
+            st.markdown("Monto por metodo de pago")
+            if "metodo_pago" in status_df.columns and "total" in status_df.columns:
+                by_payment_amount = status_df.groupby("metodo_pago", as_index=False)["total"].sum()
+                by_payment_amount.columns = ["Metodo", "Venta"]
+                st.bar_chart(by_payment_amount.set_index("Metodo"))
+
     if items:
         st.divider()
-        st.markdown("**Productos y categorias**")
-        df = pd.DataFrame(items)
-        top_products = df.groupby("nombre", as_index=False)["cantidad"].sum().sort_values("cantidad", ascending=False)
-        by_category = df.groupby("categoria", as_index=False)["subtotal"].sum().sort_values("subtotal", ascending=False)
+        st.markdown("**Analisis de catalogo y ventas**")
+        top_products = (
+            items_df.groupby("nombre", as_index=False)["cantidad"]
+            .sum()
+            .sort_values("cantidad", ascending=False)
+            .head(10)
+        )
+        by_category_sales = (
+            items_df.groupby("categoria", as_index=False)["subtotal"]
+            .sum()
+            .sort_values("subtotal", ascending=False)
+        )
+        by_category_units = (
+            items_df.groupby("categoria", as_index=False)["cantidad"]
+            .sum()
+            .sort_values("cantidad", ascending=False)
+        )
 
-        left, right = st.columns(2)
-        with left:
-            st.markdown("Productos mas vendidos")
+        prod_col1, prod_col2, prod_col3 = st.columns(3)
+        with prod_col1:
+            st.markdown("Top productos por unidades")
             st.bar_chart(top_products.set_index("nombre"))
-        with right:
+        with prod_col2:
             st.markdown("Ventas por categoria")
-            st.bar_chart(by_category.set_index("categoria"))
+            st.bar_chart(by_category_sales.set_index("categoria"))
+        with prod_col3:
+            st.markdown("Unidades por categoria")
+            st.bar_chart(by_category_units.set_index("categoria"))
 
     if orders:
         st.divider()
-        st.markdown("**Top clientes**")
+        st.markdown("**Analisis de clientes**")
         clientes_data = []
         for order in orders:
             cliente = order.get("cliente", {})
@@ -1971,8 +2014,17 @@ def render_dashboard(orders: list[dict], productos: list[dict], payments: list[d
     ]
     if low_stock_products:
         st.divider()
-        st.markdown("**Productos con stock bajo** (5 o menos unidades)")
-        st.dataframe(pd.DataFrame(low_stock_products), use_container_width=True, hide_index=True)
+        st.markdown("**Control de inventario**")
+        stock_df = pd.DataFrame(low_stock_products)
+        left, right = st.columns([1.2, 1])
+        with left:
+            st.markdown("Productos con stock bajo (5 o menos unidades)")
+            st.dataframe(stock_df, use_container_width=True, hide_index=True)
+        with right:
+            st.markdown("Stock bajo por categoria")
+            by_low_stock_category = stock_df.groupby("categoria", as_index=False)["producto"].count()
+            by_low_stock_category.columns = ["Categoria", "Productos"]
+            st.bar_chart(by_low_stock_category.set_index("Categoria"))
 
     if orders:
         st.divider()
@@ -2055,9 +2107,6 @@ def main() -> None:
 
     st.sidebar.write(f"Usuario: **{profile.get('nombre', 'Usuario')}**")
     st.sidebar.write(f"Rol: **{role}**")
-    if st.sidebar.button("Cerrar sesion"):
-        logout_user()
-        st.rerun()
 
     if role == "admin":
         pages = ["Pedidos administrativos", "Dashboard", "Configuracion"]
@@ -2068,10 +2117,12 @@ def main() -> None:
         "Modulos del sistema",
         pages,
     )
-    st.sidebar.divider()
-    st.sidebar.write(f"Productos en catalogo: **{len(productos)}**")
-    st.sidebar.write(f"Items en carrito: **{sum(st.session_state.cart.values())}**")
-    st.sidebar.write(f"Pedidos registrados: **{len(orders)}**")
+    st.sidebar.markdown("<div style='height: 45vh'></div>", unsafe_allow_html=True)
+    logout_left, logout_center, logout_right = st.sidebar.columns([1, 2, 1])
+    with logout_center:
+        if st.button("Cerrar sesion", use_container_width=True):
+            logout_user()
+            st.rerun()
 
     if role == "cliente" and st.session_state.get("status_notifications"):
         with st.container(border=True):
