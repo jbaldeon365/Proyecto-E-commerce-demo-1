@@ -303,180 +303,95 @@ alter table pedidos enable row level security;
 alter table detalle_pedidos enable row level security;
 alter table pagos_simulados enable row level security;
 
-drop policy if exists "perfiles_select_demo" on perfiles;
-drop policy if exists "perfiles_insert_demo" on perfiles;
-drop policy if exists "perfiles_update_demo" on perfiles;
+drop policy if exists "perfiles_select_final" on perfiles;
+drop policy if exists "perfiles_insert_final" on perfiles;
+drop policy if exists "perfiles_update_final" on perfiles;
 
-create policy "perfiles_select_demo"
+create policy "perfiles_select_final"
 on perfiles for select
 to authenticated
 using (auth.uid() = id);
 
-create policy "perfiles_insert_demo"
+create policy "perfiles_insert_final"
 on perfiles for insert
 to authenticated
 with check (auth.uid() = id and rol = 'cliente');
 
-create policy "perfiles_update_demo"
+create policy "perfiles_update_final"
 on perfiles for update
 to authenticated
 using (auth.uid() = id)
 with check (auth.uid() = id and rol = 'cliente');
 
-drop policy if exists "clientes_select_demo" on clientes;
-drop policy if exists "clientes_insert_demo" on clientes;
-drop policy if exists "clientes_update_demo" on clientes;
+drop policy if exists "clientes_select_final" on clientes;
+drop policy if exists "clientes_insert_final" on clientes;
+drop policy if exists "clientes_update_final" on clientes;
 
-create policy "clientes_select_demo"
+create policy "clientes_select_final"
 on clientes for select
 to anon, authenticated
 using (true);
 
-create policy "clientes_insert_demo"
+create policy "clientes_insert_final"
 on clientes for insert
 to anon, authenticated
 with check (true);
 
-create policy "clientes_update_demo"
+create policy "clientes_update_final"
 on clientes for update
 to anon, authenticated
 using (true)
 with check (true);
 
-drop policy if exists "pedidos_select_demo" on pedidos;
-drop policy if exists "pedidos_insert_demo" on pedidos;
-drop policy if exists "pedidos_update_demo" on pedidos;
+drop policy if exists "pedidos_select_final" on pedidos;
+drop policy if exists "pedidos_insert_final" on pedidos;
+drop policy if exists "pedidos_update_final" on pedidos;
 
-create policy "pedidos_select_demo"
+create policy "pedidos_select_final"
 on pedidos for select
 to anon, authenticated
 using (true);
 
-create policy "pedidos_insert_demo"
+create policy "pedidos_insert_final"
 on pedidos for insert
 to anon, authenticated
 with check (true);
 
-create policy "pedidos_update_demo"
+create policy "pedidos_update_final"
 on pedidos for update
 to anon, authenticated
 using (true)
 with check (true);
 
-drop policy if exists "detalle_select_demo" on detalle_pedidos;
-drop policy if exists "detalle_insert_demo" on detalle_pedidos;
-drop policy if exists "detalle_update_demo" on detalle_pedidos;
+drop policy if exists "detalle_select_final" on detalle_pedidos;
+drop policy if exists "detalle_insert_final" on detalle_pedidos;
+drop policy if exists "detalle_update_final" on detalle_pedidos;
 
-create policy "detalle_select_demo"
+create policy "detalle_select_final"
 on detalle_pedidos for select
 to anon, authenticated
 using (true);
 
-create policy "detalle_insert_demo"
+create policy "detalle_insert_final"
 on detalle_pedidos for insert
 to anon, authenticated
 with check (true);
 
-create policy "detalle_update_demo"
+create policy "detalle_update_final"
 on detalle_pedidos for update
 to anon, authenticated
 using (true)
 with check (true);
 
-drop policy if exists "pagos_select_demo" on pagos_simulados;
-drop policy if exists "pagos_insert_demo" on pagos_simulados;
+drop policy if exists "pagos_select_final" on pagos_simulados;
+drop policy if exists "pagos_insert_final" on pagos_simulados;
 
-create policy "pagos_select_demo"
+create policy "pagos_select_final"
 on pagos_simulados for select
 to anon, authenticated
 using (true);
 
-create policy "pagos_insert_demo"
+create policy "pagos_insert_final"
 on pagos_simulados for insert
 to anon, authenticated
 with check (true);
-
--- ============================================================
--- Datos de prueba opcionales
--- ============================================================
-
-insert into clientes (id, nombre, email, telefono, direccion)
-values
-  (
-    '11111111-1111-1111-1111-111111111111',
-    'Cliente Demo',
-    'cliente.demo@correo.com',
-    '999999999',
-    'Av. Demo 123, Lima'
-  )
-on conflict (email) do update
-set
-  nombre = excluded.nombre,
-  telefono = excluded.telefono,
-  direccion = excluded.direccion,
-  updated_at = now();
-
-insert into pedidos (
-  id,
-  codigo,
-  cliente_id,
-  total,
-  estado,
-  metodo_pago,
-  estado_pago,
-  codigo_pago,
-  fecha_pago,
-  requiere_revision,
-  motivo_revision,
-  actualizado_por,
-  fecha_actualizacion_estado,
-  fecha_pedido
-)
-values
-  (
-    '22222222-2222-2222-2222-222222222222',
-    'FAL-DEMO-0001',
-    '11111111-1111-1111-1111-111111111111',
-    2679.80,
-    'Pendiente',
-    'Tarjeta',
-    'Aprobado',
-    'PAY-DEMO-0001',
-    now(),
-    false,
-    null,
-    'sistema',
-    now(),
-    now()
-  )
-on conflict (codigo) do nothing;
-
-insert into detalle_pedidos (
-  pedido_id,
-  producto_id,
-  producto_nombre,
-  categoria,
-  precio,
-  cantidad,
-  subtotal
-)
-values
-  (
-    '22222222-2222-2222-2222-222222222222',
-    'PROD-001',
-    'Laptop Lenovo IdeaPad 15',
-    'Tecnologia',
-    2499.90,
-    1,
-    2499.90
-  ),
-  (
-    '22222222-2222-2222-2222-222222222222',
-    'PROD-003',
-    'Zapatillas Urbanas Hombre',
-    'Moda',
-    179.90,
-    1,
-    179.90
-  )
-on conflict do nothing;

@@ -23,98 +23,16 @@ except Exception:  # pragma: no cover
 ESTADOS_OPERATIVOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
 ESTADOS_EXCEPCION = ["Pago pendiente", "Observado", "Revision administrativa", "Cancelado"]
 ESTADOS = ESTADOS_OPERATIVOS + ESTADOS_EXCEPCION
-ESTADOS_ADMINISTRATIVOS = ["Observado", "Revision administrativa", "Cancelado", "Pago pendiente"]
+ESTADOS_ADMINISTRATIVOS = ["Revision administrativa"]
 ROLES = ["cliente", "admin"]
 METODOS_PAGO = ["Tarjeta", "Yape"]
 ESTADOS_PAGO = ["Aprobado", "Rechazado"]
 CATALOG_CACHE_KEY = "catalogo:productos"
 CATALOG_CACHE_TTL_SECONDS = 300
 LIMA_TZ = ZoneInfo("America/Lima")
-MONTO_REVISION_ADMIN = 5000
 MESES_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
-]
-
-PRODUCTOS_DEMO = [
-    {
-        "_id": "PROD-001",
-        "nombre": "Laptop Lenovo IdeaPad 15",
-        "categoria": "Tecnologia",
-        "precio": 2499.90,
-        "stock": 12,
-        "imagen": "https://images.unsplash.com/photo-1496181133206-80ce9b88a853?auto=format&fit=crop&w=900&q=80",
-        "descripcion": "Laptop de 15 pulgadas para estudio, oficina y productividad diaria.",
-        "caracteristicas": {
-            "marca": "Lenovo",
-            "procesador": "Intel Core i5",
-            "memoria": "16 GB RAM",
-            "almacenamiento": "512 GB SSD",
-        },
-    },
-    {
-        "_id": "PROD-002",
-        "nombre": "Smart TV Samsung 55 4K",
-        "categoria": "Electrodomesticos",
-        "precio": 1899.00,
-        "stock": 8,
-        "imagen": "https://images.unsplash.com/photo-1593784991095-a205069470b6?auto=format&fit=crop&w=900&q=80",
-        "descripcion": "Televisor 4K con aplicaciones integradas y alto contraste.",
-        "caracteristicas": {
-            "marca": "Samsung",
-            "tamano": "55 pulgadas",
-            "resolucion": "4K UHD",
-            "garantia": "12 meses",
-        },
-    },
-    {
-        "_id": "PROD-003",
-        "nombre": "Zapatillas Urbanas Hombre",
-        "categoria": "Moda",
-        "precio": 179.90,
-        "stock": 25,
-        "imagen": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?auto=format&fit=crop&w=900&q=80",
-        "descripcion": "Zapatillas comodas para uso diario con suela antideslizante.",
-        "caracteristicas": {
-            "talla": "40-44",
-            "color": "Negro",
-            "material": "Textil y sintetico",
-        },
-    },
-    {
-        "_id": "PROD-004",
-        "nombre": "Refrigeradora No Frost 300L",
-        "categoria": "Electrodomesticos",
-        "precio": 1399.50,
-        "stock": 6,
-        "imagen": "https://images.unsplash.com/photo-1584568694244-14fbdf83bd30?auto=format&fit=crop&w=900&q=80",
-        "descripcion": "Refrigeradora de bajo consumo con tecnologia No Frost.",
-        "caracteristicas": {
-            "capacidad": "300 litros",
-            "consumo": "Clase A",
-            "garantia": "24 meses",
-        },
-    },
-    {
-        "_id": "PROD-005",
-        "nombre": "Audifonos Bluetooth Sony",
-        "categoria": "Tecnologia",
-        "precio": 349.90,
-        "stock": 18,
-        "imagen": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?auto=format&fit=crop&w=900&q=80",
-        "descripcion": "Audifonos inalambricos con cancelacion de ruido y bateria prolongada.",
-        "caracteristicas": {"marca": "Sony", "conexion": "Bluetooth", "bateria": "30 horas"},
-    },
-    {
-        "_id": "PROD-006",
-        "nombre": "Casaca Impermeable Mujer",
-        "categoria": "Moda",
-        "precio": 229.90,
-        "stock": 15,
-        "imagen": "https://images.unsplash.com/photo-1544022613-e87ca75a784a?auto=format&fit=crop&w=900&q=80",
-        "descripcion": "Casaca ligera resistente al agua para temporada fria.",
-        "caracteristicas": {"talla": "S-M-L", "color": "Azul", "material": "Poliester"},
-    },
 ]
 
 
@@ -262,7 +180,6 @@ def supabase_auth_request(endpoint: str, payload: dict) -> dict:
 
 def init_state() -> None:
     st.session_state.setdefault("cart", {})
-    st.session_state.setdefault("demo_orders", [])
     st.session_state.setdefault("access_token", "")
     st.session_state.setdefault("current_user", None)
     st.session_state.setdefault("current_profile", None)
@@ -522,7 +439,11 @@ def load_catalog_from_redis() -> list[dict] | None:
         if not raw_catalog:
             return None
         catalog = json.loads(raw_catalog)
-        return [normalize_product(producto) for producto in catalog]
+        productos = [normalize_product(producto) for producto in catalog]
+        if is_legacy_catalog_cache(productos):
+            client.delete(CATALOG_CACHE_KEY)
+            return None
+        return productos
     except Exception:
         return None
 
@@ -536,6 +457,19 @@ def save_catalog_to_redis(productos: list[dict]) -> None:
         client.set(CATALOG_CACHE_KEY, json.dumps(normalized), ex=CATALOG_CACHE_TTL_SECONDS)
     except Exception:
         pass
+
+
+def is_legacy_catalog_cache(productos: list[dict]) -> bool:
+    legacy_names = {
+        "Laptop Lenovo IdeaPad 15",
+        "Smart TV Samsung 55 4K",
+        "Zapatillas Urbanas Hombre",
+        "Refrigeradora No Frost 300L",
+        "Audifonos Bluetooth Sony",
+        "Casaca Impermeable Mujer",
+    }
+    names = {str(producto.get("nombre", "")) for producto in productos}
+    return bool(names & legacy_names)
 
 
 def invalidate_catalog_cache() -> None:
@@ -638,15 +572,17 @@ def load_products() -> tuple[list[dict], str]:
 
         collection = get_mongo_collection()
         if collection is None:
-            return PRODUCTOS_DEMO, "demo"
+            st.error("No se pudo conectar a MongoDB. Configura el catalogo en MongoDB Atlas.")
+            return [], "sin_conexion"
         productos = [normalize_product(producto) for producto in collection.find({}).sort("nombre", 1)]
         if not productos:
-            return PRODUCTOS_DEMO, "demo"
+            st.warning("No hay productos registrados en MongoDB Atlas.")
+            return [], "mongodb_vacio"
         save_catalog_to_redis(productos)
         return productos, "mongodb"
     except Exception as exc:
-        st.warning(f"No se pudo conectar a MongoDB. Usando catalogo demo. Detalle: {exc}")
-        return PRODUCTOS_DEMO, "demo"
+        st.error(f"No se pudo cargar el catalogo desde MongoDB Atlas. Detalle: {exc}")
+        return [], "sin_conexion"
 
 
 def add_to_cart(pid: str, quantity: int) -> None:
@@ -994,18 +930,6 @@ def validate_cart_stock(items: list[dict]) -> list[str]:
     return errors
 
 
-def evaluate_order_review(cliente: dict, total: float, payment: dict) -> tuple[bool, str]:
-    if payment.get("estado_pago") != "Aprobado":
-        return True, "Pago rechazado o pendiente. Requiere validacion antes de continuar."
-    if not cliente.get("telefono") or not cliente.get("direccion"):
-        return True, "Datos de contacto o direccion incompletos."
-    if len(str(cliente.get("direccion", "")).strip()) < 12:
-        return True, "Direccion de entrega demasiado corta para despacho."
-    if total >= MONTO_REVISION_ADMIN:
-        return True, f"Pedido de monto alto. Supera el umbral de {money(MONTO_REVISION_ADMIN)}."
-    return False, ""
-
-
 def get_or_save_customer(cliente: dict) -> str:
     email = cliente["email"].strip().lower()
     payload = {
@@ -1128,33 +1052,9 @@ def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
     stock_errors = validate_cart_stock(items)
     if stock_errors:
         raise RuntimeError(" ".join(stock_errors))
-    requires_review, review_reason = evaluate_order_review(cliente, total, payment)
-    initial_status = "Revision administrativa" if requires_review else "Pendiente"
 
     if not has_supabase_config():
-        st.session_state.demo_orders.append(
-            {
-                "id": str(uuid4()),
-                "codigo": codigo,
-                "cliente": cliente,
-                "items": items,
-                "total": total,
-                "estado": initial_status,
-                "metodo_pago": payment["metodo_pago"],
-                "estado_pago": payment["estado_pago"],
-                "codigo_pago": payment["codigo_pago"],
-                "fecha_pago": payment["fecha_pago"],
-                "requiere_revision": requires_review,
-                "motivo_revision": review_reason,
-                "actualizado_por": "sistema",
-                "fecha_actualizacion_estado": now_iso(),
-                "fecha_pedido": now_iso(),
-            }
-        )
-        discount_stock(items)
-        st.session_state.cart = {}
-        clear_cart_from_redis()
-        return codigo
+        raise RuntimeError("Configura Supabase para registrar pedidos.")
 
     cliente_id = get_or_save_customer(cliente)
 
@@ -1165,13 +1065,13 @@ def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
             "codigo": codigo,
             "cliente_id": cliente_id,
             "total": total,
-            "estado": initial_status,
+            "estado": "Pendiente",
             "metodo_pago": payment["metodo_pago"],
             "estado_pago": payment["estado_pago"],
             "codigo_pago": payment["codigo_pago"],
             "fecha_pago": payment["fecha_pago"],
-            "requiere_revision": requires_review,
-            "motivo_revision": review_reason,
+            "requiere_revision": False,
+            "motivo_revision": "",
             "actualizado_por": "sistema",
             "fecha_actualizacion_estado": now_iso(),
         },
@@ -1201,7 +1101,7 @@ def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
 
 def load_orders() -> tuple[list[dict], str]:
     if not has_supabase_config():
-        return st.session_state.demo_orders, "demo"
+        return [], "sin_conexion"
 
     pedidos = supabase_request(
         "GET",
@@ -1278,38 +1178,19 @@ def load_payment_attempts() -> list[dict]:
 def update_order_status(order_id: str, estado: str, motivo_revision: str = "") -> None:
     requires_review = estado in ESTADOS_EXCEPCION and estado != "Cancelado"
     if not has_supabase_config():
-        for order in st.session_state.demo_orders:
-            if order["id"] == order_id:
-                order["estado"] = estado
-                order["requiere_revision"] = requires_review
-                order["motivo_revision"] = motivo_revision
-                order["actualizado_por"] = "admin"
-                order["fecha_actualizacion_estado"] = now_iso()
-                return
-    else:
-        supabase_request(
-            "PATCH",
-            "pedidos",
-            params={"id": f"eq.{order_id}"},
-            payload={
-                "estado": estado,
-                "requiere_revision": requires_review,
-                "motivo_revision": motivo_revision,
-                "actualizado_por": "admin",
-                "fecha_actualizacion_estado": now_iso(),
-            },
-        )
-
-
-def seed_mongodb() -> None:
-    collection = get_mongo_collection()
-    if collection is None:
-        st.error("Configura MongoDB primero para cargar los productos semilla.")
-        return
-    for producto in PRODUCTOS_DEMO:
-        collection.replace_one({"_id": producto["_id"]}, producto, upsert=True)
-    invalidate_catalog_cache()
-    st.success("Catalogo semilla cargado en MongoDB.")
+        raise RuntimeError("Configura Supabase para actualizar pedidos.")
+    supabase_request(
+        "PATCH",
+        "pedidos",
+        params={"id": f"eq.{order_id}"},
+        payload={
+            "estado": estado,
+            "requiere_revision": requires_review,
+            "motivo_revision": motivo_revision,
+            "actualizado_por": "admin",
+            "fecha_actualizacion_estado": now_iso(),
+        },
+    )
 
 
 def render_header() -> None:
@@ -1366,6 +1247,9 @@ def render_auth_page() -> None:
 
 def render_catalog(productos: list[dict]) -> None:
     st.subheader("Catalogo de productos")
+    if not productos:
+        st.info("No hay productos disponibles. Revisa MongoDB Atlas y limpia el cache de Redis si corresponde.")
+        return
 
     categorias = ["Todas"] + sorted({producto["categoria"] for producto in productos})
     categoria = st.selectbox("Filtrar por categoria", categorias)
@@ -1660,16 +1544,8 @@ def render_admin(orders: list[dict]) -> None:
                     use_container_width=True,
                 )
 
-            nuevo_estado = st.selectbox(
-                "Marcar excepcion administrativa",
-                ESTADOS_ADMINISTRATIVOS,
-                index=(
-                    ESTADOS_ADMINISTRATIVOS.index(order["estado"])
-                    if order["estado"] in ESTADOS_ADMINISTRATIVOS
-                    else 0
-                ),
-                key=f"estado_{order['id']}",
-            )
+            nuevo_estado = ESTADOS_ADMINISTRATIVOS[0]
+            st.write(f"Accion administrativa: **{nuevo_estado}**")
             motivo_revision = st.text_area(
                 "Motivo u observacion administrativa",
                 value=order.get("motivo_revision", ""),
@@ -1973,20 +1849,21 @@ def render_data_tools(product_source: str, order_source: str) -> None:
     catalog_label = {
         "mongodb": "MongoDB",
         "redis": "Redis cache",
-        "demo": "Demo",
+        "sin_conexion": "Sin conexion",
+        "mongodb_vacio": "MongoDB vacio",
     }.get(product_source, product_source)
     cols = st.columns(4)
     cols[0].metric("Catalogo", catalog_label)
-    cols[1].metric("Pedidos", "Supabase" if order_source == "supabase" else "Demo")
+    cols[1].metric("Pedidos", "Supabase" if order_source == "supabase" else "Sin conexion")
     cols[2].metric("Carrito temporal", redis_source)
     cols[3].metric("Estado operativo", "Listo")
 
-    if product_source == "demo":
-        st.warning("El catalogo esta usando datos demo. Revisa la conexion o los productos en MongoDB.")
+    if product_source in {"sin_conexion", "mongodb_vacio"}:
+        st.warning("El catalogo no esta disponible. Revisa MongoDB Atlas y la coleccion configurada.")
     if product_source == "redis":
         st.info("El catalogo se esta leyendo desde Redis. MongoDB Atlas se mantiene como fuente oficial.")
-    if order_source == "demo":
-        st.warning("Los pedidos estan usando modo demo. Revisa la conexion de Supabase.")
+    if order_source != "supabase":
+        st.warning("Los pedidos no estan disponibles. Revisa la conexion de Supabase.")
     if redis_source != "Redis":
         st.info("Redis no esta configurado. El carrito se conserva solo en la sesion activa.")
 

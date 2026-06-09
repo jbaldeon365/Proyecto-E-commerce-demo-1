@@ -20,7 +20,7 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 - MongoDB: catalogo de productos.
 - Supabase: clientes, pedidos y detalle de pedidos.
 - Upstash Redis: carrito temporal por usuario y cache temporal del catalogo.
-- Supabase Edge Functions: procesamiento automatico de pedidos.
+- Supabase pg_cron: procesamiento automatico de pedidos.
 - Pandas: tablas y metricas.
 
 ## Estructura
@@ -33,10 +33,7 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 ├── .gitignore
 ├── .streamlit/
 │   └── secrets.toml.example
-├── supabase/
-│   └── functions/procesar-pedidos/index.ts
 └── database/
-    ├── productos_mongodb_seed.json
     ├── supabase_cron_job.sql
     ├── supabase_schema.sql
     ├── supabase_rls_policies.sql
@@ -114,8 +111,8 @@ Cuando el cliente compra, el checkout carga automaticamente estos datos para evi
 
 ## Automatizacion de pedidos con Supabase
 
-La app incluye una funcion SQL llamada `procesar_pedidos_automaticos()` y una Edge Function en
-`supabase/functions/procesar-pedidos/index.ts`.
+La app incluye una funcion SQL llamada `procesar_pedidos_automaticos()` y un cron job de Supabase
+configurado en `database/supabase_cron_job.sql`.
 
 El flujo normal puede avanzar sin intervencion manual:
 
@@ -149,11 +146,7 @@ from pg_indexes
 where tablename = 'clientes'
   and indexname = 'idx_clientes_email_unique';
 ```
-5. En `Edge Functions`, crea una funcion llamada `procesar-pedidos`.
-6. Copia el contenido de `supabase/functions/procesar-pedidos/index.ts`.
-7. En `Settings > Edge Functions > Secrets`, confirma que existan `SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`.
-8. Despliega la funcion.
-9. Verifica los cambios de estado desde el panel administrativo o consultando la tabla `pedidos`.
+5. Verifica los cambios de estado desde el panel administrativo o consultando la tabla `pedidos`.
 
 ### Cron automatico en Supabase
 
@@ -191,9 +184,8 @@ database = "falabella_ecommerce"
 collection = "productos"
 ```
 
-4. En la app, entra al modulo `Configuracion` y pulsa `Cargar productos semilla en MongoDB`.
-
-Tambien puedes importar manualmente `database/productos_mongodb_seed.json` en MongoDB Compass o Atlas.
+4. Carga tus productos reales directamente en la coleccion configurada de MongoDB Atlas.
+5. Si cambiaste productos y Redis tenia cache anterior, elimina la clave `catalogo:productos` en Upstash.
 
 ## Configurar Upstash Redis
 
@@ -222,8 +214,8 @@ La app usa Redis para dos propositos:
 - Cache temporal del catalogo consultado desde MongoDB Atlas.
 
 MongoDB Atlas se mantiene como fuente oficial del catalogo y stock. Redis solo guarda una copia temporal
-para reducir consultas repetitivas. Cuando se descuenta stock o se recarga el catalogo semilla, la app
-invalida el cache para volver a sincronizar datos desde MongoDB.
+para reducir consultas repetitivas. Cuando se descuenta stock, la app invalida el cache para volver a
+sincronizar datos desde MongoDB.
 
 La app guarda el carrito con una clave por usuario de Supabase:
 
@@ -247,15 +239,6 @@ intento queda registrado en `pagos_simulados` para que el dashboard muestre metr
 Cuando el pago es aprobado, la app muestra un comprobante final con codigo de pedido, datos del cliente,
 metodo de pago, productos comprados, total y estado inicial. El usuario cierra el flujo con `Continuar`.
 
-## Modo demo
-
-La aplicacion funciona aunque no configures credenciales. En ese caso:
-
-- El catalogo usa productos demo definidos en `app.py`.
-- Los pedidos se guardan solo en memoria de la sesion de Streamlit.
-
-Este modo sirve para presentar el flujo, probar el carrito y validar la experiencia antes de conectar la nube.
-
 ## Flujo del sistema
 
 ```mermaid
@@ -270,7 +253,7 @@ flowchart TD
     F --> G[El pedido se almacena en Supabase]
     C --> H[Catalogo consultado desde Redis o MongoDB]
     H --> M[MongoDB Atlas como fuente oficial]
-    G --> A1[Edge Function procesa pedidos normales]
+    G --> A1[Supabase pg_cron procesa pedidos normales]
     A1 -->|Sin observaciones| J[Estado avanza automaticamente]
     A1 -->|Con problemas| I[Area administrativa revisa excepciones]
     I --> J

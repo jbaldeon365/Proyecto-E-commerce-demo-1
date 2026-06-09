@@ -19,17 +19,17 @@ grant select, insert on table perfiles to authenticated;
 
 alter table perfiles enable row level security;
 
-drop policy if exists "perfiles_select_demo" on perfiles;
-drop policy if exists "perfiles_insert_demo" on perfiles;
-drop policy if exists "perfiles_update_demo" on perfiles;
+drop policy if exists "perfiles_select_final" on perfiles;
+drop policy if exists "perfiles_insert_final" on perfiles;
+drop policy if exists "perfiles_update_final" on perfiles;
 
-create policy "perfiles_select_demo"
+create policy "perfiles_select_final"
 on perfiles
 for select
 to authenticated
 using (auth.uid() = id);
 
-create policy "perfiles_insert_demo"
+create policy "perfiles_insert_final"
 on perfiles
 for insert
 to authenticated
