@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from html import escape
 from datetime import datetime, timezone
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -1382,6 +1383,39 @@ def render_catalog(productos: list[dict]) -> None:
         st.info("No hay productos disponibles. Revisa MongoDB Atlas y limpia el cache de Redis si corresponde.")
         return
 
+    st.markdown(
+        """
+        <style>
+        .catalog-image {
+            width: 100%;
+            height: 230px;
+            object-fit: cover;
+            border-radius: 8px;
+            display: block;
+            margin-bottom: 1rem;
+        }
+        .catalog-title {
+            height: 2.6rem;
+            font-weight: 700;
+            margin-bottom: 0.35rem;
+            overflow: hidden;
+        }
+        .catalog-description {
+            height: 4.6rem;
+            line-height: 1.55;
+            margin: 0.9rem 0 0.75rem;
+            overflow: hidden;
+        }
+        .catalog-price {
+            font-size: 1.45rem;
+            font-weight: 800;
+            margin: 0.25rem 0 0.75rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     categorias = ["Todas"] + sorted({producto["categoria"] for producto in productos})
     filter_col, search_col = st.columns([1, 2.2])
     categoria = filter_col.selectbox("Categoria", categorias)
@@ -1399,12 +1433,6 @@ def render_catalog(productos: list[dict]) -> None:
             or busqueda.lower() in producto["categoria"].lower()
         ]
 
-    total_stock = sum(int(producto.get("stock", 0)) for producto in filtrados)
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Productos encontrados", len(filtrados))
-    metric_cols[1].metric("Categorias visibles", len({producto["categoria"] for producto in filtrados}))
-    metric_cols[2].metric("Stock disponible", total_stock)
-
     if not filtrados:
         st.info("No se encontraron productos con los filtros aplicados.")
         return
@@ -1416,22 +1444,41 @@ def render_catalog(productos: list[dict]) -> None:
             with col:
                 stock = int(producto.get("stock", 0))
                 with st.container(border=True):
-                    if producto.get("imagen"):
-                        st.image(producto["imagen"], use_container_width=True)
-                    st.markdown(f"**{producto['nombre']}**")
+                    image_url = escape(str(producto.get("imagen", "")))
+                    if image_url:
+                        st.markdown(
+                            f'<img class="catalog-image" src="{image_url}" alt="{escape(producto["nombre"])}">',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            '<div class="catalog-image" style="background:#20232b;"></div>',
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown(
+                        f'<div class="catalog-title">{escape(producto["nombre"])}</div>',
+                        unsafe_allow_html=True,
+                    )
                     st.caption(producto["categoria"])
-                    st.write(producto["descripcion"])
+                    st.markdown(
+                        f'<div class="catalog-description">{escape(producto["descripcion"])}</div>',
+                        unsafe_allow_html=True,
+                    )
 
-                    price_col, stock_col = st.columns(2)
-                    price_col.markdown(f"### {money(float(producto['precio']))}")
                     stock_label = "Sin stock" if stock <= 0 else f"Stock: {stock}"
-                    stock_col.caption(stock_label)
+                    st.caption(stock_label)
+                    st.markdown(
+                        f'<div class="catalog-price">{money(float(producto["precio"]))}</div>',
+                        unsafe_allow_html=True,
+                    )
 
                     caracteristicas = producto.get("caracteristicas", {})
-                    if caracteristicas:
-                        with st.expander("Ver caracteristicas"):
+                    with st.expander("Ver caracteristicas"):
+                        if caracteristicas:
                             for key, value in caracteristicas.items():
                                 st.write(f"**{humanize_key(str(key))}:** {value}")
+                        else:
+                            st.write("Sin caracteristicas adicionales.")
 
                     already_in_cart = st.session_state.cart.get(product_id(producto), 0)
                     remaining = max(stock - already_in_cart, 0)
