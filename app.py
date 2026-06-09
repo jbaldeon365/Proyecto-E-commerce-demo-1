@@ -1313,8 +1313,8 @@ def update_order_status(order_id: str, estado: str, motivo_revision: str = "") -
 
 
 def render_header() -> None:
-    st.title("Gestor de pedidos - Falabella Cloud")
-    st.caption("Plataforma ecommerce escalable orientada a catalogo, carrito y gestion de pedidos.")
+    st.title("Falabella Cloud")
+    st.caption("Gestion de catalogo, compras y pedidos en una plataforma ecommerce escalable.")
 
 
 def render_auth_page() -> None:
@@ -1377,14 +1377,15 @@ def render_auth_page() -> None:
 
 
 def render_catalog(productos: list[dict]) -> None:
-    st.subheader("Catalogo de productos")
+    st.subheader("Catalogo")
     if not productos:
         st.info("No hay productos disponibles. Revisa MongoDB Atlas y limpia el cache de Redis si corresponde.")
         return
 
     categorias = ["Todas"] + sorted({producto["categoria"] for producto in productos})
-    categoria = st.selectbox("Filtrar por categoria", categorias)
-    busqueda = sanitize_search(st.text_input("Buscar producto", placeholder="Laptop, zapatillas, TV..."))
+    filter_col, search_col = st.columns([1, 2.2])
+    categoria = filter_col.selectbox("Categoria", categorias)
+    busqueda = sanitize_search(search_col.text_input("Buscar producto", placeholder="Nombre, categoria o descripcion"))
 
     filtrados = productos
     if categoria != "Todas":
@@ -1395,52 +1396,63 @@ def render_catalog(productos: list[dict]) -> None:
             for producto in filtrados
             if busqueda.lower() in producto["nombre"].lower()
             or busqueda.lower() in producto["descripcion"].lower()
+            or busqueda.lower() in producto["categoria"].lower()
         ]
 
+    total_stock = sum(int(producto.get("stock", 0)) for producto in filtrados)
+    metric_cols = st.columns(3)
+    metric_cols[0].metric("Productos encontrados", len(filtrados))
+    metric_cols[1].metric("Categorias visibles", len({producto["categoria"] for producto in filtrados}))
+    metric_cols[2].metric("Stock disponible", total_stock)
+
+    if not filtrados:
+        st.info("No se encontraron productos con los filtros aplicados.")
+        return
+
+    st.divider()
     for index in range(0, len(filtrados), 3):
         row = st.columns(3)
         for col, producto in zip(row, filtrados[index : index + 3]):
             with col:
                 stock = int(producto.get("stock", 0))
-                st.image(producto["imagen"], use_container_width=True)
-                st.markdown(f"**{producto['nombre']}**")
-                st.caption(f"{producto['categoria']} | Stock: {stock}")
-                st.write(producto["descripcion"])
-                st.write(f"**{money(float(producto['precio']))}**")
+                with st.container(border=True):
+                    if producto.get("imagen"):
+                        st.image(producto["imagen"], use_container_width=True)
+                    st.markdown(f"**{producto['nombre']}**")
+                    st.caption(producto["categoria"])
+                    st.write(producto["descripcion"])
 
-                with st.expander("Caracteristicas"):
+                    price_col, stock_col = st.columns(2)
+                    price_col.markdown(f"### {money(float(producto['precio']))}")
+                    stock_label = "Sin stock" if stock <= 0 else f"Stock: {stock}"
+                    stock_col.caption(stock_label)
+
                     caracteristicas = producto.get("caracteristicas", {})
                     if caracteristicas:
-                        for key, value in caracteristicas.items():
-                            st.write(f"**{humanize_key(str(key))}:** {value}")
-                    else:
-                        st.write("Sin caracteristicas adicionales.")
+                        with st.expander("Ver caracteristicas"):
+                            for key, value in caracteristicas.items():
+                                st.write(f"**{humanize_key(str(key))}:** {value}")
 
-                if stock <= 0:
-                    st.warning("Sin stock disponible")
-                    st.button("Agregar al carrito", key=f"add_{product_id(producto)}", disabled=True)
-                else:
-                    qty = st.number_input(
+                    already_in_cart = st.session_state.cart.get(product_id(producto), 0)
+                    remaining = max(stock - already_in_cart, 0)
+                    qty_col, action_col = st.columns([1, 1.4])
+                    qty = qty_col.number_input(
                         "Cantidad",
                         min_value=1,
-                        max_value=stock,
+                        max_value=max(remaining, 1),
                         value=1,
                         key=f"qty_{product_id(producto)}",
+                        disabled=remaining <= 0,
                     )
-                    already_in_cart = st.session_state.cart.get(product_id(producto), 0)
-                    remaining = stock - already_in_cart
-                    disabled = remaining <= 0
-                    if st.button(
-                        "Agregar al carrito",
+                    if action_col.button(
+                        "Agregar",
                         key=f"add_{product_id(producto)}",
-                        disabled=disabled,
+                        disabled=remaining <= 0,
+                        use_container_width=True,
                     ):
-                        if qty > remaining:
-                            st.error(f"Solo puedes agregar {remaining} unidad(es) mas de este producto.")
-                        else:
-                            add_to_cart(product_id(producto), qty)
-                    if disabled:
-                        st.caption("Ya agregaste todo el stock disponible al carrito.")
+                        add_to_cart(product_id(producto), int(qty))
+                    if remaining <= 0:
+                        st.caption("No hay unidades disponibles para agregar.")
 
 
 def render_cart(productos: list[dict]) -> None:
@@ -2105,8 +2117,11 @@ def main() -> None:
     if role == "cliente":
         notify_order_status_changes(orders)
 
-    st.sidebar.write(f"Usuario: **{profile.get('nombre', 'Usuario')}**")
-    st.sidebar.write(f"Rol: **{role}**")
+    st.sidebar.markdown(
+        "<h1 style='font-size: 2.2rem; margin-bottom: 0.25rem;'>FALABELLA</h1>",
+        unsafe_allow_html=True,
+    )
+    st.sidebar.markdown(f"Hola, **{profile.get('nombre', 'Usuario')}**")
 
     if role == "admin":
         pages = ["Pedidos administrativos", "Dashboard", "Configuracion"]
@@ -2123,12 +2138,6 @@ def main() -> None:
         if st.button("Cerrar sesion", use_container_width=True):
             logout_user()
             st.rerun()
-
-    if role == "cliente" and st.session_state.get("status_notifications"):
-        with st.container(border=True):
-            st.markdown("**Notificaciones de pedidos**")
-            for notification in st.session_state.status_notifications:
-                st.info(notification)
 
     if page == "Catalogo":
         render_catalog(productos)
