@@ -245,7 +245,7 @@ begin
     estado = 'Pago pendiente',
     requiere_revision = true,
     motivo_revision = 'Pago rechazado o pendiente. Requiere revision administrativa.',
-    actualizado_por = 'edge_function',
+    actualizado_por = 'pg_cron',
     fecha_actualizacion_estado = now()
   where estado in ('Pendiente', 'Procesando')
     and estado_pago <> 'Aprobado';
@@ -255,7 +255,7 @@ begin
   update pedidos
   set
     estado = 'Procesando',
-    actualizado_por = 'edge_function',
+    actualizado_por = 'pg_cron',
     fecha_actualizacion_estado = now()
   where estado = 'Pendiente'
     and estado_pago = 'Aprobado'
@@ -268,7 +268,7 @@ begin
   update pedidos
   set
     estado = 'Enviado',
-    actualizado_por = 'edge_function',
+    actualizado_por = 'pg_cron',
     fecha_actualizacion_estado = now()
   where estado = 'Procesando'
     and estado_pago = 'Aprobado'
@@ -281,7 +281,7 @@ begin
   update pedidos
   set
     estado = 'Entregado',
-    actualizado_por = 'edge_function',
+    actualizado_por = 'pg_cron',
     fecha_actualizacion_estado = now()
   where estado = 'Enviado'
     and estado_pago = 'Aprobado'
