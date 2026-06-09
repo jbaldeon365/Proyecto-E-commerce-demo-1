@@ -656,6 +656,7 @@ def reset_payment_gateway() -> None:
 def close_order_confirmation() -> None:
     st.session_state.show_order_confirmation = False
     st.session_state.order_confirmation = {}
+    reset_payment_gateway()
     st.session_state.checkout_step = "cart"
 
 
@@ -700,6 +701,10 @@ def payment_gateway_content() -> None:
     customer = st.session_state.get("checkout_customer", {})
     total = cart_total(items)
     step = st.session_state.get("payment_step", 1)
+
+    if step == 4 and st.session_state.get("order_confirmation"):
+        order_confirmation_content()
+        return
 
     st.metric("Monto total a pagar", money(total))
     st.caption("Pasarela simulada para validar el flujo de checkout antes de generar el pedido.")
@@ -825,8 +830,8 @@ def payment_gateway_content() -> None:
                     "total": total,
                     "estado_inicial": "Pendiente",
                 }
-                reset_payment_gateway()
                 st.session_state.show_order_confirmation = True
+                st.session_state.payment_step = 4
                 st.rerun()
             except Exception as exc:
                 st.error("No se pudo completar la compra.")
@@ -1423,7 +1428,7 @@ def render_cart(productos: list[dict]) -> None:
 
     if st.session_state.get("show_payment_gateway"):
         render_payment_gateway()
-    if st.session_state.get("show_order_confirmation"):
+    elif st.session_state.get("show_order_confirmation"):
         render_order_confirmation()
 
 
