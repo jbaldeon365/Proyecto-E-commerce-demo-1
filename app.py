@@ -1695,72 +1695,86 @@ def render_admin(orders: list[dict]) -> None:
         }
         for order in visible_orders
     ]
-    st.dataframe(pd.DataFrame(table), use_container_width=True, hide_index=True)
+    table_df = pd.DataFrame(table)
+    selected_table = st.dataframe(
+        table_df,
+        use_container_width=True,
+        hide_index=True,
+        selection_mode="single-row",
+        on_select="rerun",
+        key="admin_orders_table",
+    )
 
     if len(filtered) > len(visible_orders):
         st.caption(f"Mostrando {len(visible_orders)} de {len(filtered)} pedidos filtrados.")
 
-    if not search.strip():
-        st.info("Ingresa un codigo de pedido, nombre o correo para ver el detalle y actualizar su estado.")
-        return
+    selected_rows = []
+    try:
+        selected_rows = selected_table.selection.rows
+    except AttributeError:
+        selected_rows = selected_table.get("selection", {}).get("rows", []) if selected_table else []
 
-    st.markdown("**Detalle y actualizacion de estado**")
-    if not filtered:
+    if not visible_orders:
         st.info("No hay pedidos que coincidan con los filtros seleccionados.")
         return
 
-    options = {
-        f"{order['codigo']} | {order['cliente'].get('nombre', '')} | {order['estado']} | {format_lima_datetime(order['fecha_pedido'])}": order
-        for order in filtered
-    }
-    selected_label = st.selectbox("Seleccionar pedido", list(options.keys()))
-    selected_orders = [options[selected_label]] if selected_label else []
+    st.markdown("**Detalle y actualizacion de estado**")
 
-    for order in selected_orders:
-        with st.expander(f"{order['codigo']} - {order['estado']}"):
-            st.write(f"Cliente: **{order['cliente'].get('nombre', '')}**")
-            st.write(f"Email: {order['cliente'].get('email', '')}")
-            st.write(f"Fecha Lima: {format_lima_datetime(order['fecha_pedido'])}")
-            st.write(f"Total: **{money(order['total'])}**")
-            st.write(
-                f"Pago: **{order.get('estado_pago', 'Aprobado')}** "
-                f"({order.get('metodo_pago', 'Tarjeta')})"
+    if not selected_rows:
+        st.info("Selecciona una fila de la tabla para ver el detalle del pedido.")
+        return
+
+    selected_index = selected_rows[0]
+    if selected_index >= len(visible_orders):
+        st.info("Selecciona nuevamente el pedido.")
+        return
+
+    order = visible_orders[selected_index]
+    with st.container(border=True):
+        st.markdown(f"**{order['codigo']} - {order['estado']}**")
+        info_cols = st.columns(4)
+        info_cols[0].write(f"Cliente: **{order['cliente'].get('nombre', '')}**")
+        info_cols[1].write(f"Pago: **{order.get('estado_pago', 'Aprobado')}**")
+        info_cols[2].write(f"Metodo: **{order.get('metodo_pago', 'Tarjeta')}**")
+        info_cols[3].write(f"Total: **{money(order['total'])}**")
+        st.caption(f"Email: {order['cliente'].get('email', '')}")
+        st.caption(f"Fecha Lima: {format_lima_datetime(order['fecha_pedido'])}")
+        if order.get("codigo_pago"):
+            st.caption(f"Codigo de pago: {order['codigo_pago']}")
+        if order.get("requiere_revision") or order.get("motivo_revision"):
+            st.warning(order.get("motivo_revision") or "Pedido marcado para revision administrativa.")
+
+        detalle = pd.DataFrame(order["items"])
+        if not detalle.empty:
+            detalle["precio"] = detalle["precio"].map(money)
+            detalle["subtotal"] = detalle["subtotal"].map(money)
+            st.dataframe(
+                detalle[["nombre", "categoria", "precio", "cantidad", "subtotal"]],
+                use_container_width=True,
+                hide_index=True,
             )
-            if order.get("codigo_pago"):
-                st.caption(f"Codigo de pago: {order['codigo_pago']}")
-            if order.get("requiere_revision") or order.get("motivo_revision"):
-                st.warning(order.get("motivo_revision") or "Pedido marcado para revision administrativa.")
 
-            detalle = pd.DataFrame(order["items"])
-            if not detalle.empty:
-                detalle["precio"] = detalle["precio"].map(money)
-                detalle["subtotal"] = detalle["subtotal"].map(money)
-                st.dataframe(
-                    detalle[["nombre", "categoria", "precio", "cantidad", "subtotal"]],
-                    use_container_width=True,
-                )
-
-            nuevo_estado = ESTADOS_ADMINISTRATIVOS[0]
-            st.write(f"Accion administrativa: **{nuevo_estado}**")
-            motivo_revision = st.text_area(
-                "Motivo u observacion administrativa",
-                value=order.get("motivo_revision", ""),
-                key=f"motivo_{order['id']}",
-            )
-            if st.button("Guardar estado", key=f"save_{order['id']}"):
-                motivo_revision = sanitize_admin_note(motivo_revision)
-                if not motivo_revision:
-                    st.error("Ingresa una observacion para registrar la excepcion administrativa.")
-                    return
-                if len(motivo_revision) < 8:
-                    st.error("La observacion administrativa debe tener al menos 8 caracteres.")
-                    return
-                if not ADMIN_NOTE_RE.match(motivo_revision):
-                    st.error("La observacion contiene caracteres no permitidos.")
-                    return
-                update_order_status(order["id"], nuevo_estado, motivo_revision)
-                st.success("Estado actualizado.")
-                st.rerun()
+        nuevo_estado = ESTADOS_ADMINISTRATIVOS[0]
+        st.write(f"Accion administrativa: **{nuevo_estado}**")
+        motivo_revision = st.text_area(
+            "Motivo u observacion administrativa",
+            value=order.get("motivo_revision", ""),
+            key=f"motivo_{order['id']}",
+        )
+        if st.button("Guardar estado", key=f"save_{order['id']}"):
+            motivo_revision = sanitize_admin_note(motivo_revision)
+            if not motivo_revision:
+                st.error("Ingresa una observacion para registrar la excepcion administrativa.")
+                return
+            if len(motivo_revision) < 8:
+                st.error("La observacion administrativa debe tener al menos 8 caracteres.")
+                return
+            if not ADMIN_NOTE_RE.match(motivo_revision):
+                st.error("La observacion contiene caracteres no permitidos.")
+                return
+            update_order_status(order["id"], nuevo_estado, motivo_revision)
+            st.success("Estado actualizado.")
+            st.rerun()
 
 
 def render_my_orders(orders: list[dict], productos: list[dict]) -> None:
