@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from uuid import uuid4
 from zoneinfo import ZoneInfo
@@ -34,6 +35,11 @@ MESES_ES = [
     "enero", "febrero", "marzo", "abril", "mayo", "junio",
     "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre",
 ]
+
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+NAME_RE = re.compile(r"^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+(?:[ '-][A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+)*$")
+ADDRESS_RE = re.compile(r"^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s.,#°º\-/]+$")
+ADMIN_NOTE_RE = re.compile(r"^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s.,;:()#°º\-/]+$")
 
 
 def get_secret(section: str, key: str, env_key: str, default: str = "") -> str:
@@ -200,6 +206,82 @@ def init_state() -> None:
 
 def money(value: float) -> str:
     return f"S/ {value:,.2f}"
+
+
+def compact_spaces(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def only_digits(value: str, max_length: int | None = None) -> str:
+    digits = "".join(char for char in str(value or "") if char.isdigit())
+    return digits[:max_length] if max_length else digits
+
+
+def sanitize_name(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ' -]", "", str(value or ""))
+    return compact_spaces(cleaned)
+
+
+def sanitize_email(value: str) -> str:
+    return str(value or "").strip().lower()
+
+
+def sanitize_address(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s.,#°º\-/]", "", str(value or ""))
+    return compact_spaces(cleaned)
+
+
+def sanitize_search(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s.,#\-/]", "", str(value or ""))
+    return compact_spaces(cleaned)
+
+
+def sanitize_admin_note(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\s.,;:()#°º\-/]", "", str(value or ""))
+    return compact_spaces(cleaned)
+
+
+def sanitize_expiry(value: str) -> str:
+    digits = only_digits(value, 4)
+    if len(digits) <= 2:
+        return digits
+    return f"{digits[:2]}/{digits[2:]}"
+
+
+def validate_name(value: str, label: str = "nombre") -> list[str]:
+    if not value:
+        return [f"Ingresa {label}."]
+    if len(value) < 3:
+        return [f"El {label} debe tener al menos 3 caracteres."]
+    if not NAME_RE.match(value):
+        return [f"El {label} solo debe contener letras, espacios, apostrofe o guion."]
+    return []
+
+
+def validate_email(value: str) -> list[str]:
+    if not value:
+        return ["Ingresa correo electronico."]
+    if not EMAIL_RE.match(value):
+        return ["Ingresa un correo electronico valido."]
+    return []
+
+
+def validate_phone(value: str, required: bool = False) -> list[str]:
+    if not value and not required:
+        return []
+    if len(value) != 9 or not value.startswith("9"):
+        return ["El telefono debe tener 9 digitos y empezar con 9."]
+    return []
+
+
+def validate_address(value: str, required: bool = True) -> list[str]:
+    if not value:
+        return ["Ingresa direccion de entrega."] if required else []
+    if len(value) < 8:
+        return ["La direccion debe tener al menos 8 caracteres."]
+    if not ADDRESS_RE.match(value):
+        return ["La direccion contiene caracteres no permitidos."]
+    return []
 
 
 def humanize_key(key: str) -> str:
@@ -497,8 +579,8 @@ def load_profile(user: dict) -> dict | None:
 def create_profile(user: dict, nombre: str, rol: str = "cliente") -> dict:
     profile = {
         "id": user["id"],
-        "nombre": nombre,
-        "email": user["email"],
+        "nombre": sanitize_name(nombre) or "Usuario",
+        "email": sanitize_email(user["email"]),
         "rol": rol if rol in ROLES else "cliente",
     }
     result = supabase_request("POST", "perfiles", payload=profile, prefer_return=True)
@@ -509,18 +591,20 @@ def update_current_profile_name(nombre: str) -> None:
     user_id = current_user_id()
     if not user_id:
         return
+    nombre = sanitize_name(nombre)
     supabase_request(
         "PATCH",
         "perfiles",
         params={"id": f"eq.{user_id}"},
-        payload={"nombre": nombre.strip(), "updated_at": now_iso()},
+        payload={"nombre": nombre, "updated_at": now_iso()},
     )
     profile = current_profile().copy()
-    profile["nombre"] = nombre.strip()
+    profile["nombre"] = nombre
     st.session_state.current_profile = profile
 
 
 def login_user(email: str, password: str) -> None:
+    email = sanitize_email(email)
     auth = supabase_auth_request(
         "token?grant_type=password",
         {"email": email, "password": password},
@@ -536,6 +620,8 @@ def login_user(email: str, password: str) -> None:
 
 
 def register_user(nombre: str, email: str, password: str) -> None:
+    nombre = sanitize_name(nombre)
+    email = sanitize_email(email)
     auth = supabase_auth_request(
         "signup",
         {"email": email, "password": password, "data": {"nombre": nombre}},
@@ -671,29 +757,49 @@ def validate_payment_details(method: str, details: dict) -> list[str]:
     errors = []
 
     if method == "Tarjeta":
-        card_number = "".join(char for char in details.get("card_number", "") if char.isdigit())
-        cvv = "".join(char for char in details.get("cvv", "") if char.isdigit())
-        if not details.get("card_holder"):
-            errors.append("Ingresa el nombre del titular de la tarjeta.")
+        card_holder = sanitize_name(details.get("card_holder", ""))
+        card_number = only_digits(details.get("card_number", ""), 19)
+        cvv = only_digits(details.get("cvv", ""), 4)
+        document = only_digits(details.get("document", ""), 12)
+        expiry = sanitize_expiry(details.get("expiry", ""))
+        errors.extend(validate_name(card_holder, "nombre del titular"))
         if len(card_number) < 13 or len(card_number) > 19:
             errors.append("Ingresa un numero de tarjeta valido.")
-        if not details.get("expiry"):
-            errors.append("Ingresa la fecha de vencimiento.")
+        if not re.match(r"^(0[1-9]|1[0-2])/[0-9]{2}$", expiry):
+            errors.append("Ingresa la fecha de vencimiento en formato MM/AA.")
         if len(cvv) not in [3, 4]:
             errors.append("Ingresa un CVV valido.")
-        if not details.get("document"):
-            errors.append("Ingresa el documento del titular.")
+        if len(document) < 8:
+            errors.append("Ingresa un documento valido del titular.")
     elif method == "Yape":
-        phone = "".join(char for char in details.get("phone", "") if char.isdigit())
-        approval_code = "".join(char for char in details.get("approval_code", "") if char.isdigit())
-        if len(phone) != 9:
-            errors.append("Ingresa un numero de celular Yape de 9 digitos.")
+        phone = only_digits(details.get("phone", ""), 9)
+        approval_code = only_digits(details.get("approval_code", ""), 12)
+        errors.extend(validate_phone(phone, required=True))
         if len(approval_code) < 6:
             errors.append("Ingresa el numero de aprobacion de Yape.")
     else:
         errors.append("Selecciona un metodo de pago valido.")
 
     return errors
+
+
+def normalize_payment_details(method: str, details: dict) -> dict:
+    if method == "Tarjeta":
+        normalized = {
+            "card_holder": sanitize_name(details.get("card_holder", "")),
+            "card_number": only_digits(details.get("card_number", ""), 19),
+            "expiry": sanitize_expiry(details.get("expiry", "")),
+            "cvv": only_digits(details.get("cvv", ""), 4),
+            "document": only_digits(details.get("document", ""), 12),
+            "installments": details.get("installments", "1 cuota"),
+        }
+        return normalized
+    if method == "Yape":
+        return {
+            "phone": only_digits(details.get("phone", ""), 9),
+            "approval_code": only_digits(details.get("approval_code", ""), 12),
+        }
+    return details
 
 
 def payment_gateway_content() -> None:
@@ -737,28 +843,32 @@ def payment_gateway_content() -> None:
         if method == "Tarjeta":
             details["card_holder"] = st.text_input(
                 "Titular de la tarjeta",
-                value=details.get("card_holder", customer.get("nombre", "")),
+                value=sanitize_name(details.get("card_holder", customer.get("nombre", ""))),
             )
             details["card_number"] = st.text_input(
                 "Numero de tarjeta",
-                value=details.get("card_number", ""),
+                value=only_digits(details.get("card_number", ""), 19),
                 placeholder="4111 1111 1111 1111",
+                max_chars=19,
             )
             col_a, col_b = st.columns(2)
             details["expiry"] = col_a.text_input(
                 "Vencimiento",
-                value=details.get("expiry", ""),
+                value=sanitize_expiry(details.get("expiry", "")),
                 placeholder="MM/AA",
+                max_chars=5,
             )
             details["cvv"] = col_b.text_input(
                 "CVV",
-                value=details.get("cvv", ""),
+                value=only_digits(details.get("cvv", ""), 4),
                 type="password",
+                max_chars=4,
             )
             details["document"] = st.text_input(
                 "Documento del titular",
-                value=details.get("document", ""),
+                value=only_digits(details.get("document", ""), 12),
                 placeholder="DNI o CE",
+                max_chars=12,
             )
             details["installments"] = st.selectbox(
                 "Cuotas",
@@ -770,13 +880,15 @@ def payment_gateway_content() -> None:
         else:
             details["phone"] = st.text_input(
                 "Numero de celular Yape",
-                value=details.get("phone", ""),
+                value=only_digits(details.get("phone", ""), 9),
                 placeholder="999888777",
+                max_chars=9,
             )
             details["approval_code"] = st.text_input(
                 "Numero de aprobacion",
-                value=details.get("approval_code", ""),
+                value=only_digits(details.get("approval_code", ""), 12),
                 placeholder="123456",
+                max_chars=12,
             )
 
         st.session_state.payment_details = details
@@ -786,6 +898,8 @@ def payment_gateway_content() -> None:
             st.session_state.payment_step = 1
             st.rerun()
         if col2.button("Siguiente", type="primary", use_container_width=True):
+            details = normalize_payment_details(method, details)
+            st.session_state.payment_details = details
             errors = validate_payment_details(method, details)
             if errors:
                 for error in errors:
@@ -936,12 +1050,12 @@ def validate_cart_stock(items: list[dict]) -> list[str]:
 
 
 def get_or_save_customer(cliente: dict) -> str:
-    email = cliente["email"].strip().lower()
+    email = sanitize_email(cliente["email"])
     payload = {
-        "nombre": cliente["nombre"].strip(),
+        "nombre": sanitize_name(cliente["nombre"]),
         "email": email,
-        "telefono": cliente.get("telefono", "").strip(),
-        "direccion": cliente.get("direccion", "").strip(),
+        "telefono": only_digits(cliente.get("telefono", ""), 9),
+        "direccion": sanitize_address(cliente.get("direccion", "")),
         "updated_at": now_iso(),
     }
     existing = supabase_request(
@@ -1219,8 +1333,13 @@ def render_auth_page() -> None:
             password = st.text_input("Contrasena", type="password", key="login_password")
             submitted = st.form_submit_button("Entrar")
         if submitted:
-            if not email or not password:
-                st.error("Ingresa correo y contrasena.")
+            email = sanitize_email(email)
+            errors = validate_email(email)
+            if not password:
+                errors.append("Ingresa contrasena.")
+            if errors:
+                for error in errors:
+                    st.error(error)
                 return
             try:
                 login_user(email, password)
@@ -1236,11 +1355,18 @@ def render_auth_page() -> None:
             password = st.text_input("Contrasena", type="password")
             submitted = st.form_submit_button("Crear cuenta cliente")
         if submitted:
-            if not nombre or not email or not password:
-                st.error("Completa nombre, correo y contrasena.")
-                return
+            nombre = sanitize_name(nombre)
+            email = sanitize_email(email)
+            errors = []
+            errors.extend(validate_name(nombre, "nombre completo"))
+            errors.extend(validate_email(email))
+            if not password:
+                errors.append("Ingresa contrasena.")
             if len(password) < 6:
-                st.error("La contrasena debe tener al menos 6 caracteres.")
+                errors.append("La contrasena debe tener al menos 6 caracteres.")
+            if errors:
+                for error in errors:
+                    st.error(error)
                 return
             try:
                 register_user(nombre, email, password)
@@ -1258,7 +1384,7 @@ def render_catalog(productos: list[dict]) -> None:
 
     categorias = ["Todas"] + sorted({producto["categoria"] for producto in productos})
     categoria = st.selectbox("Filtrar por categoria", categorias)
-    busqueda = st.text_input("Buscar producto", placeholder="Laptop, zapatillas, TV...")
+    busqueda = sanitize_search(st.text_input("Buscar producto", placeholder="Laptop, zapatillas, TV..."))
 
     filtrados = productos
     if categoria != "Todas":
@@ -1404,7 +1530,11 @@ def render_cart(productos: list[dict]) -> None:
         with st.form("checkout_customer_form"):
             nombre = st.text_input("Nombre completo", value=customer_profile.get("nombre") or profile.get("nombre", ""))
             email = st.text_input("Correo electronico", value=profile.get("email", ""), disabled=True)
-            telefono = st.text_input("Telefono", value=customer_profile.get("telefono", ""))
+            telefono = st.text_input(
+                "Telefono",
+                value=only_digits(customer_profile.get("telefono", ""), 9),
+                max_chars=9,
+            )
             direccion = st.text_area("Direccion de entrega", value=customer_profile.get("direccion", ""))
             col_back, col_pay = st.columns(2)
             back = col_back.form_submit_button("Volver al carrito", use_container_width=True)
@@ -1415,9 +1545,18 @@ def render_cart(productos: list[dict]) -> None:
             st.rerun()
 
         if submitted:
-            email = profile.get("email", "")
-            if not nombre or not email:
-                st.error("Ingresa nombre y correo para generar el pedido.")
+            nombre = sanitize_name(nombre)
+            email = sanitize_email(profile.get("email", ""))
+            telefono = only_digits(telefono, 9)
+            direccion = sanitize_address(direccion)
+            errors = []
+            errors.extend(validate_name(nombre, "nombre completo"))
+            errors.extend(validate_email(email))
+            errors.extend(validate_phone(telefono, required=True))
+            errors.extend(validate_address(direccion, required=True))
+            if errors:
+                for error in errors:
+                    st.error(error)
                 return
             st.session_state.checkout_customer = {
                 "nombre": nombre,
@@ -1453,7 +1592,7 @@ def render_admin(orders: list[dict]) -> None:
 
     st.markdown("**Filtros de busqueda**")
     col1, col2, col3 = st.columns(3)
-    search = col1.text_input("Buscar codigo o cliente", placeholder="FAL-..., nombre o correo")
+    search = sanitize_search(col1.text_input("Buscar codigo o cliente", placeholder="FAL-..., nombre o correo"))
     status = col2.selectbox("Estado del pedido", ["Todos"] + ESTADOS)
     payment_status = col3.selectbox("Estado de pago", ["Todos"] + ESTADOS_PAGO)
 
@@ -1565,8 +1704,15 @@ def render_admin(orders: list[dict]) -> None:
                 key=f"motivo_{order['id']}",
             )
             if st.button("Guardar estado", key=f"save_{order['id']}"):
-                if not motivo_revision.strip():
+                motivo_revision = sanitize_admin_note(motivo_revision)
+                if not motivo_revision:
                     st.error("Ingresa una observacion para registrar la excepcion administrativa.")
+                    return
+                if len(motivo_revision) < 8:
+                    st.error("La observacion administrativa debe tener al menos 8 caracteres.")
+                    return
+                if not ADMIN_NOTE_RE.match(motivo_revision):
+                    st.error("La observacion contiene caracteres no permitidos.")
                     return
                 update_order_status(order["id"], nuevo_estado, motivo_revision)
                 st.success("Estado actualizado.")
@@ -1581,7 +1727,7 @@ def render_my_orders(orders: list[dict], productos: list[dict]) -> None:
         st.info("Aun no tienes pedidos registrados con tu correo.")
         return
 
-    busqueda = st.text_input("Buscar por N° de pedido", placeholder="FAL-20260605...")
+    busqueda = sanitize_search(st.text_input("Buscar por No. de pedido", placeholder="FAL-20260605..."))
 
     filtered = user_orders
     if busqueda:
@@ -1670,16 +1816,21 @@ def render_customer_profile() -> None:
     with st.form("customer_profile_form"):
         nombre = st.text_input("Nombre completo", value=customer_profile.get("nombre") or profile.get("nombre", ""))
         st.text_input("Correo electronico", value=email, disabled=True)
-        telefono = st.text_input("Telefono", value=customer_profile.get("telefono", ""))
+        telefono = st.text_input("Telefono", value=only_digits(customer_profile.get("telefono", ""), 9), max_chars=9)
         direccion = st.text_area("Direccion principal de entrega", value=customer_profile.get("direccion", ""))
         submitted = st.form_submit_button("Guardar perfil", type="primary")
 
     if submitted:
-        if not nombre.strip():
-            st.error("Ingresa tu nombre completo.")
-            return
-        if telefono and not telefono.strip().isdigit():
-            st.error("El telefono debe contener solo numeros.")
+        nombre = sanitize_name(nombre)
+        telefono = only_digits(telefono, 9)
+        direccion = sanitize_address(direccion)
+        errors = []
+        errors.extend(validate_name(nombre, "nombre completo"))
+        errors.extend(validate_phone(telefono, required=False))
+        errors.extend(validate_address(direccion, required=False))
+        if errors:
+            for error in errors:
+                st.error(error)
             return
         try:
             update_current_profile_name(nombre)
