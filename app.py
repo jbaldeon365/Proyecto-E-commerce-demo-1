@@ -23,6 +23,7 @@ except Exception:  # pragma: no cover
 ESTADOS_OPERATIVOS = ["Pendiente", "Procesando", "Enviado", "Entregado"]
 ESTADOS_EXCEPCION = ["Pago pendiente", "Observado", "Revision administrativa", "Cancelado"]
 ESTADOS = ESTADOS_OPERATIVOS + ESTADOS_EXCEPCION
+ESTADOS_ADMINISTRATIVOS = ["Observado", "Revision administrativa", "Cancelado", "Pago pendiente"]
 ROLES = ["cliente", "admin"]
 METODOS_PAGO = ["Tarjeta", "Yape"]
 ESTADOS_PAGO = ["Aprobado", "Rechazado"]
@@ -274,6 +275,10 @@ def init_state() -> None:
     st.session_state.setdefault("payment_details", {})
     st.session_state.setdefault("simulate_payment_rejection", False)
     st.session_state.setdefault("checkout_step", "cart")
+    st.session_state.setdefault("show_order_confirmation", False)
+    st.session_state.setdefault("order_confirmation", {})
+    st.session_state.setdefault("status_notifications", [])
+    st.session_state.setdefault("order_status_snapshot", {})
 
 
 def money(value: float) -> str:
@@ -350,6 +355,26 @@ def order_status_message(order: dict) -> str:
     return "Tu pedido requiere revision administrativa."
 
 
+def order_progress_index(estado: str) -> int:
+    if estado in ESTADOS_OPERATIVOS:
+        return ESTADOS_OPERATIVOS.index(estado)
+    return 0
+
+
+def render_order_progress(estado: str) -> None:
+    if estado not in ESTADOS_OPERATIVOS:
+        st.warning("Este pedido esta fuera del flujo automatico y requiere revision administrativa.")
+        return
+
+    current = order_progress_index(estado)
+    progress = (current + 1) / len(ESTADOS_OPERATIVOS)
+    st.progress(progress)
+    cols = st.columns(len(ESTADOS_OPERATIVOS))
+    for idx, step in enumerate(ESTADOS_OPERATIVOS):
+        marker = "✓" if idx <= current else "○"
+        cols[idx].caption(f"{marker} {step}")
+
+
 def current_profile() -> dict:
     return st.session_state.get("current_profile") or {}
 
@@ -374,6 +399,11 @@ def current_email() -> str:
 def redis_cart_key() -> str:
     user_id = current_user_id()
     return f"cart:{user_id}" if user_id else ""
+
+
+def redis_order_status_key() -> str:
+    user_id = current_user_id()
+    return f"orders:last-status:{user_id}" if user_id else ""
 
 
 def load_cart_from_redis() -> None:
@@ -423,6 +453,58 @@ def clear_cart_from_redis() -> None:
             client.delete(key)
         except Exception:
             pass
+
+
+def load_order_status_snapshot() -> dict:
+    client = get_redis_client()
+    key = redis_order_status_key()
+    if client is not None and key:
+        try:
+            raw_snapshot = client.get(key)
+            return json.loads(raw_snapshot) if raw_snapshot else {}
+        except Exception:
+            return {}
+    return st.session_state.get("order_status_snapshot", {})
+
+
+def save_order_status_snapshot(snapshot: dict) -> None:
+    client = get_redis_client()
+    key = redis_order_status_key()
+    if client is not None and key:
+        try:
+            client.set(key, json.dumps(snapshot), ex=60 * 60 * 24 * 30)
+            return
+        except Exception:
+            pass
+    st.session_state.order_status_snapshot = snapshot
+
+
+def notify_order_status_changes(orders: list[dict]) -> None:
+    if current_role() != "cliente":
+        return
+
+    user_orders = load_current_user_orders(orders)
+    current_snapshot = {order["codigo"]: order["estado"] for order in user_orders}
+    previous_snapshot = load_order_status_snapshot()
+
+    notifications = []
+    for order in user_orders:
+        codigo = order["codigo"]
+        previous_status = previous_snapshot.get(codigo)
+        current_status = order["estado"]
+        if previous_status and previous_status != current_status:
+            first_item = (order.get("items") or [{}])[0]
+            product_code = first_item.get("producto_id", "")
+            product_label = f" - Producto {product_code}" if product_code else ""
+            notifications.append(
+                f"Pedido {codigo}{product_label}: {previous_status} -> {current_status}"
+            )
+
+    save_order_status_snapshot(current_snapshot)
+    st.session_state.status_notifications = notifications
+
+    for notification in notifications:
+        st.toast(notification)
 
 
 def normalize_product(producto: dict) -> dict:
@@ -635,6 +717,12 @@ def reset_payment_gateway() -> None:
     st.session_state.checkout_step = "cart"
 
 
+def close_order_confirmation() -> None:
+    st.session_state.show_order_confirmation = False
+    st.session_state.order_confirmation = {}
+    st.session_state.checkout_step = "cart"
+
+
 def mask_card_number(card_number: str) -> str:
     digits = "".join(char for char in card_number if char.isdigit())
     if len(digits) < 4:
@@ -793,12 +881,64 @@ def payment_gateway_content() -> None:
             payment = simulate_payment(method, status)
             try:
                 codigo = create_order(customer, items, payment)
+                st.session_state.order_confirmation = {
+                    "codigo": codigo,
+                    "cliente": customer,
+                    "items": items,
+                    "payment": payment,
+                    "total": total,
+                    "estado_inicial": "Pendiente",
+                }
                 reset_payment_gateway()
-                st.success(f"Pago aprobado y pedido generado correctamente: {codigo}")
+                st.session_state.show_order_confirmation = True
                 st.rerun()
             except Exception as exc:
                 st.error("No se pudo completar la compra.")
                 st.info(f"Detalle tecnico: {exc}")
+
+
+def order_confirmation_content() -> None:
+    confirmation = st.session_state.get("order_confirmation", {})
+    if not confirmation:
+        close_order_confirmation()
+        st.rerun()
+
+    customer = confirmation.get("cliente", {})
+    items = confirmation.get("items", [])
+    payment = confirmation.get("payment", {})
+
+    st.success("Pago aprobado y pedido generado correctamente.")
+    st.metric("Codigo de pedido", confirmation.get("codigo", ""))
+    st.write(f"Cliente: **{customer.get('nombre', '')}**")
+    st.write(f"Correo: {customer.get('email', '')}")
+    st.write(f"Metodo de pago: **{payment.get('metodo_pago', '')}**")
+    st.write(f"Codigo de pago: {payment.get('codigo_pago', '')}")
+    st.write(f"Fecha de pago: {format_lima_datetime(payment.get('fecha_pago', ''))}")
+    st.write(f"Estado inicial: **{confirmation.get('estado_inicial', 'Pendiente')}**")
+    st.write(f"Total: **{money(float(confirmation.get('total', 0)))}**")
+
+    detalle = pd.DataFrame(items)
+    if not detalle.empty:
+        detalle["precio"] = detalle["precio"].map(money)
+        detalle["subtotal"] = detalle["subtotal"].map(money)
+        st.dataframe(
+            detalle[["nombre", "categoria", "precio", "cantidad", "subtotal"]],
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if st.button("Continuar", type="primary", use_container_width=True):
+        close_order_confirmation()
+        st.rerun()
+
+
+def render_order_confirmation() -> None:
+    dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
+    if dialog:
+        dialog("Comprobante de pedido")(order_confirmation_content)()
+    else:
+        with st.container(border=True):
+            order_confirmation_content()
 
 
 def render_payment_gateway() -> None:
@@ -1399,6 +1539,8 @@ def render_cart(productos: list[dict]) -> None:
 
     if st.session_state.get("show_payment_gateway"):
         render_payment_gateway()
+    if st.session_state.get("show_order_confirmation"):
+        render_order_confirmation()
 
 
 def render_admin(orders: list[dict]) -> None:
@@ -1519,9 +1661,13 @@ def render_admin(orders: list[dict]) -> None:
                 )
 
             nuevo_estado = st.selectbox(
-                "Actualizar estado",
-                ESTADOS,
-                index=ESTADOS.index(order["estado"]) if order["estado"] in ESTADOS else 0,
+                "Marcar excepcion administrativa",
+                ESTADOS_ADMINISTRATIVOS,
+                index=(
+                    ESTADOS_ADMINISTRATIVOS.index(order["estado"])
+                    if order["estado"] in ESTADOS_ADMINISTRATIVOS
+                    else 0
+                ),
                 key=f"estado_{order['id']}",
             )
             motivo_revision = st.text_area(
@@ -1530,6 +1676,9 @@ def render_admin(orders: list[dict]) -> None:
                 key=f"motivo_{order['id']}",
             )
             if st.button("Guardar estado", key=f"save_{order['id']}"):
+                if not motivo_revision.strip():
+                    st.error("Ingresa una observacion para registrar la excepcion administrativa.")
+                    return
                 update_order_status(order["id"], nuevo_estado, motivo_revision)
                 st.success("Estado actualizado.")
                 st.rerun()
@@ -1575,6 +1724,7 @@ def render_my_orders(orders: list[dict], productos: list[dict]) -> None:
             message = order_status_message(order)
             st.markdown(f"{icon} **{order['estado']}**")
             st.caption(message)
+            render_order_progress(order["estado"])
 
             st.divider()
             items = order.get("items", [])
@@ -1650,63 +1800,168 @@ def render_customer_profile() -> None:
         except Exception as exc:
             st.error(f"No se pudo actualizar el perfil. {exc}")
 
-
 def render_dashboard(orders: list[dict], productos: list[dict], payments: list[dict]) -> None:
     st.subheader("Dashboard")
 
     total_orders = len(orders)
     pending = sum(1 for order in orders if order["estado"] == "Pendiente")
+    processing = sum(1 for order in orders if order["estado"] == "Procesando")
+    shipped = sum(1 for order in orders if order["estado"] == "Enviado")
     delivered = sum(1 for order in orders if order["estado"] == "Entregado")
+    cancelled = sum(1 for order in orders if order["estado"] == "Cancelado")
     review_orders = sum(1 for order in orders if order.get("requiere_revision"))
-    sales = sum(order["total"] for order in orders)
-    avg_ticket = sales / total_orders if total_orders else 0
+    billable_orders = [order for order in orders if order["estado"] != "Cancelado"]
+    sales = sum(order["total"] for order in billable_orders)
+    avg_ticket = sales / len(billable_orders) if billable_orders else 0
     approved_payments = sum(1 for payment in payments if payment.get("estado_pago") == "Aprobado")
     rejected_payments = sum(1 for payment in payments if payment.get("estado_pago") == "Rechazado")
+    total_payments = approved_payments + rejected_payments
+    approval_rate = (approved_payments / total_payments * 100) if total_payments else 0
     low_stock = sum(1 for producto in productos if int(producto.get("stock", 0)) <= 5)
 
+    st.markdown("**Resumen operativo**")
     cols = st.columns(4)
     cols[0].metric("Total de pedidos", total_orders)
-    cols[1].metric("Pedidos pendientes", pending)
-    cols[2].metric("Pedidos entregados", delivered)
-    cols[3].metric("Ventas totales", money(sales))
+    cols[1].metric("Ventas totales", money(sales))
+    cols[2].metric("Ticket promedio", money(avg_ticket))
+    cols[3].metric("Tasa de aprobacion", f"{approval_rate:.0f}%")
 
     cols = st.columns(4)
-    cols[0].metric("Ticket promedio", money(avg_ticket))
-    cols[1].metric("Pedidos en revision", review_orders)
+    cols[0].metric("Pendientes", pending)
+    cols[1].metric("En proceso", processing)
+    cols[2].metric("Enviados", shipped)
+    cols[3].metric("Entregados", delivered)
+
+    cols = st.columns(4)
+    cols[0].metric("Pedidos en revision", review_orders)
+    cols[1].metric("Pedidos cancelados", cancelled)
     cols[2].metric("Pagos rechazados", rejected_payments)
     cols[3].metric("Productos bajo stock", low_stock)
 
     if orders:
+        st.divider()
+        st.markdown("**Graficas operativas**")
         status_df = pd.DataFrame(orders)
         if "metodo_pago" not in status_df.columns:
             status_df["metodo_pago"] = "Tarjeta"
+
         left, right = st.columns(2)
         with left:
-            st.markdown("**Pedidos por estado**")
+            st.markdown("Pedidos por estado")
             by_status = status_df.groupby("estado", as_index=False)["id"].count()
-            st.bar_chart(by_status.set_index("estado"))
+            by_status.columns = ["Estado", "Cantidad"]
+            st.bar_chart(by_status.set_index("Estado"))
         with right:
-            st.markdown("**Pagos por metodo**")
+            st.markdown("Pagos por metodo")
             payment_df = pd.DataFrame(payments) if payments else status_df
-            by_payment = payment_df.groupby("metodo_pago", as_index=False)["id"].count()
-            st.bar_chart(by_payment.set_index("metodo_pago"))
+            if "metodo_pago" in payment_df.columns and "id" in payment_df.columns:
+                by_payment = payment_df.groupby("metodo_pago", as_index=False)["id"].count()
+                by_payment.columns = ["Metodo", "Cantidad"]
+                st.bar_chart(by_payment.set_index("Metodo"))
+
+        try:
+            dates_df = status_df.copy()
+            dates_df["fecha"] = pd.to_datetime(
+                dates_df["fecha_pedido"].str.replace("Z", "+00:00", regex=False),
+                utc=True,
+                errors="coerce",
+            ).dt.date
+            daily = dates_df.groupby("fecha", as_index=False).agg(
+                pedidos=("id", "count"),
+                ventas=("total", "sum"),
+            )
+            daily = daily.sort_values("fecha")
+
+            left, right = st.columns(2)
+            with left:
+                st.markdown("Pedidos por dia")
+                st.line_chart(daily.set_index("fecha")["pedidos"])
+            with right:
+                st.markdown("Ventas por dia")
+                st.line_chart(daily.set_index("fecha")["ventas"])
+        except Exception:
+            pass
 
     items = [item for order in orders for item in order["items"]]
-    if not items:
+    if items:
+        st.divider()
+        st.markdown("**Productos y categorias**")
+        df = pd.DataFrame(items)
+        top_products = df.groupby("nombre", as_index=False)["cantidad"].sum().sort_values("cantidad", ascending=False)
+        by_category = df.groupby("categoria", as_index=False)["subtotal"].sum().sort_values("subtotal", ascending=False)
+
+        left, right = st.columns(2)
+        with left:
+            st.markdown("Productos mas vendidos")
+            st.bar_chart(top_products.set_index("nombre"))
+        with right:
+            st.markdown("Ventas por categoria")
+            st.bar_chart(by_category.set_index("categoria"))
+
+    if orders:
+        st.divider()
+        st.markdown("**Top clientes**")
+        clientes_data = []
+        for order in orders:
+            cliente = order.get("cliente", {})
+            nombre = cliente.get("nombre", "Sin nombre")
+            email = cliente.get("email", "")
+            if nombre and email:
+                clientes_data.append({"cliente": nombre, "email": email, "total": order["total"]})
+        if clientes_data:
+            clientes_df = pd.DataFrame(clientes_data)
+            top_clientes = (
+                clientes_df.groupby(["cliente", "email"], as_index=False)
+                .agg(pedidos=("total", "count"), total_compras=("total", "sum"))
+                .sort_values("total_compras", ascending=False)
+                .head(10)
+            )
+            top_clientes["total_compras"] = top_clientes["total_compras"].map(money)
+            st.dataframe(top_clientes, use_container_width=True, hide_index=True)
+
+    low_stock_products = [
+        {
+            "producto": producto["nombre"],
+            "categoria": producto["categoria"],
+            "stock": int(producto.get("stock", 0)),
+            "precio": money(float(producto["precio"])),
+        }
+        for producto in productos
+        if int(producto.get("stock", 0)) <= 5
+    ]
+    if low_stock_products:
+        st.divider()
+        st.markdown("**Productos con stock bajo** (5 o menos unidades)")
+        st.dataframe(pd.DataFrame(low_stock_products), use_container_width=True, hide_index=True)
+
+    if orders:
+        st.divider()
+        st.markdown("**Exportar datos**")
+        export_data = [
+            {
+                "codigo": order["codigo"],
+                "cliente": order["cliente"].get("nombre", ""),
+                "email": order["cliente"].get("email", ""),
+                "estado": order["estado"],
+                "estado_pago": order.get("estado_pago", ""),
+                "metodo_pago": order.get("metodo_pago", ""),
+                "total": order["total"],
+                "fecha_pedido": format_lima_datetime(order["fecha_pedido"]),
+                "requiere_revision": "Si" if order.get("requiere_revision") else "No",
+            }
+            for order in orders
+        ]
+        export_df = pd.DataFrame(export_data)
+        csv = export_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Descargar pedidos en CSV",
+            data=csv,
+            file_name="pedidos_falabella.csv",
+            mime="text/csv",
+        )
+
+    if not items and not orders:
         st.info("Genera pedidos para visualizar metricas por producto y categoria.")
-        return
-
-    df = pd.DataFrame(items)
-    top_products = df.groupby("nombre", as_index=False)["cantidad"].sum().sort_values("cantidad", ascending=False)
-    by_category = df.groupby("categoria", as_index=False)["subtotal"].sum().sort_values("subtotal", ascending=False)
-
-    left, right = st.columns(2)
-    with left:
-        st.markdown("**Productos mas vendidos**")
-        st.bar_chart(top_products.set_index("nombre"))
-    with right:
-        st.markdown("**Ventas por categoria**")
-        st.bar_chart(by_category.set_index("categoria"))
 
 
 def render_data_tools(product_source: str, order_source: str) -> None:
@@ -1754,6 +2009,9 @@ def main() -> None:
 
     profile = current_profile()
     role = current_role()
+    if role == "cliente":
+        notify_order_status_changes(orders)
+
     st.sidebar.write(f"Usuario: **{profile.get('nombre', 'Usuario')}**")
     st.sidebar.write(f"Rol: **{role}**")
     if st.sidebar.button("Cerrar sesion"):
@@ -1773,6 +2031,12 @@ def main() -> None:
     st.sidebar.write(f"Productos en catalogo: **{len(productos)}**")
     st.sidebar.write(f"Items en carrito: **{sum(st.session_state.cart.values())}**")
     st.sidebar.write(f"Pedidos registrados: **{len(orders)}**")
+
+    if role == "cliente" and st.session_state.get("status_notifications"):
+        with st.container(border=True):
+            st.markdown("**Notificaciones de pedidos**")
+            for notification in st.session_state.status_notifications:
+                st.info(notification)
 
     if page == "Catalogo":
         render_catalog(productos)

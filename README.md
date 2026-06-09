@@ -7,10 +7,12 @@ Aplicacion web en Streamlit para simular una plataforma de comercio electronico 
 - Catalogo de productos desde MongoDB, con datos flexibles por categoria.
 - Carrito de compras con agregar, quitar, subtotal, total y confirmacion.
 - Pasarela de pago simulada antes de generar el pedido.
+- Comprobante final de pedido despues del pago aprobado.
 - Registro de pedidos con codigo, cliente unico por correo, productos, cantidades, total, fecha y estado.
 - Panel administrativo para buscar, filtrar, ver detalle, resolver excepciones y actualizar estados.
 - Perfil del cliente para mantener nombre, telefono y direccion principal.
-- Dashboard con pedidos, ventas simuladas, pagos, productos mas vendidos, bajo stock y categorias.
+- Mis pedidos con progreso de estado y notificaciones de cambios.
+- Dashboard con pedidos, ventas simuladas, pagos, productos mas vendidos, bajo stock, categorias y exportacion CSV.
 
 ## Tecnologias
 
@@ -241,6 +243,9 @@ Antes de generar un pedido, el cliente selecciona un metodo de pago y el resulta
 El pago puede ser `Aprobado` o `Rechazado`. Si el pago es aprobado, el sistema genera el pedido en
 Supabase y descuenta stock en MongoDB Atlas. Si el pago es rechazado, no se genera pedido, pero el
 intento queda registrado en `pagos_simulados` para que el dashboard muestre metricas de pagos.
+
+Cuando el pago es aprobado, la app muestra un comprobante final con codigo de pedido, datos del cliente,
+metodo de pago, productos comprados, total y estado inicial. El usuario cierra el flujo con `Continuar`.
 
 ## Modo demo
 
