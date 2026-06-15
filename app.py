@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from html import escape
 from datetime import datetime, timezone
 from uuid import uuid4
@@ -203,6 +204,50 @@ def init_state() -> None:
     st.session_state.setdefault("order_confirmation", {})
     st.session_state.setdefault("status_notifications", [])
     st.session_state.setdefault("order_status_snapshot", {})
+    st.session_state.setdefault("performance_metrics", {})
+
+
+def record_performance_metric(code: str, metric: str, seconds: float, source: str, result: str = "Correcto") -> None:
+    st.session_state.performance_metrics[code] = {
+        "codigo": code,
+        "metrica": metric,
+        "tiempo_segundos": round(seconds, 4),
+        "fuente": source,
+        "resultado": result,
+        "fecha_lima": datetime.now(ZoneInfo("America/Lima")).strftime("%d/%m/%Y %H:%M:%S"),
+    }
+
+
+def measured_call(code: str, metric: str, source: str, callback, *args, **kwargs):
+    start = time.perf_counter()
+    try:
+        value = callback(*args, **kwargs)
+        record_performance_metric(code, metric, time.perf_counter() - start, source)
+        return value
+    except Exception:
+        record_performance_metric(code, metric, time.perf_counter() - start, source, "Error")
+        raise
+
+
+def render_performance_metrics() -> None:
+    metrics = list(st.session_state.get("performance_metrics", {}).values())
+    st.divider()
+    st.markdown("**Metricas de rendimiento para pruebas**")
+    st.caption("Datos medidos en esta sesion con time.perf_counter().")
+
+    if not metrics:
+        st.info("Todavia no hay metricas registradas. Navega por catalogo, pedidos, dashboard y genera un pedido.")
+        return
+
+    metrics_df = pd.DataFrame(metrics).sort_values("codigo")
+    st.dataframe(metrics_df, use_container_width=True, hide_index=True)
+    csv = metrics_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Descargar metricas de rendimiento CSV",
+        data=csv,
+        file_name="metricas_rendimiento.csv",
+        mime="text/csv",
+    )
 
 
 def money(value: float) -> str:
@@ -936,7 +981,15 @@ def payment_gateway_content() -> None:
             status = "Rechazado" if st.session_state.simulate_payment_rejection else "Aprobado"
             payment = simulate_payment(method, status)
             try:
-                codigo = create_order(customer, items, payment)
+                codigo = measured_call(
+                    "PR-02",
+                    "Tiempo de generacion de pedido",
+                    "Streamlit + Supabase + MongoDB",
+                    create_order,
+                    customer,
+                    items,
+                    payment,
+                )
                 st.session_state.order_confirmation = {
                     "codigo": codigo,
                     "cliente": customer,
@@ -2156,6 +2209,8 @@ def render_data_tools(product_source: str, order_source: str) -> None:
     if redis_source != "Redis":
         st.info("Redis no esta configurado. El carrito se conserva solo en la sesion activa.")
 
+    render_performance_metrics()
+
 
 def main() -> None:
     st.set_page_config(page_title="Falabella Order Manager", page_icon="🛒", layout="wide")
@@ -2167,8 +2222,18 @@ def main() -> None:
 
     load_cart_from_redis()
 
-    productos, product_source = load_products()
-    orders, order_source = load_orders()
+    productos, product_source = measured_call(
+        "PR-01",
+        "Tiempo de carga del catalogo",
+        "MongoDB Atlas / Upstash Redis",
+        load_products,
+    )
+    orders, order_source = measured_call(
+        "PR-03",
+        "Tiempo de consulta de pedidos",
+        "Supabase PostgreSQL",
+        load_orders,
+    )
     payments = load_payment_attempts()
     render_header()
     render_security_notices()
@@ -2211,7 +2276,15 @@ def main() -> None:
     elif page == "Pedidos administrativos":
         render_admin(orders)
     elif page == "Dashboard":
-        render_dashboard(orders, productos, payments)
+        measured_call(
+            "PR-04",
+            "Tiempo de carga del dashboard",
+            "Streamlit + Pandas",
+            render_dashboard,
+            orders,
+            productos,
+            payments,
+        )
     else:
         render_data_tools(product_source, order_source)
 
