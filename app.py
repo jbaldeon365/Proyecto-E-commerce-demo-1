@@ -205,6 +205,7 @@ def init_state() -> None:
     st.session_state.setdefault("status_notifications", [])
     st.session_state.setdefault("order_status_snapshot", {})
     st.session_state.setdefault("performance_metrics", {})
+    st.session_state.setdefault("availability_results", [])
 
 
 def record_performance_metric(code: str, metric: str, seconds: float, source: str, result: str = "Correcto") -> None:
@@ -246,6 +247,107 @@ def render_performance_metrics() -> None:
         "Descargar metricas de rendimiento CSV",
         data=csv,
         file_name="metricas_rendimiento.csv",
+        mime="text/csv",
+    )
+
+
+def check_supabase_auth_available() -> tuple[bool, str]:
+    if not has_supabase_config() or not st.session_state.get("access_token"):
+        return False, "Sin configuracion o sesion activa"
+    url, key = get_supabase_config()
+    try:
+        response = requests.get(
+            f"{url}/auth/v1/user",
+            headers={
+                "apikey": key,
+                "Authorization": f"Bearer {st.session_state.access_token}",
+            },
+            timeout=8,
+        )
+        return response.ok, f"HTTP {response.status_code}"
+    except Exception as exc:
+        return False, str(exc)[:120]
+
+
+def check_mongodb_available() -> tuple[bool, str]:
+    try:
+        collection = get_mongo_collection()
+        if collection is None:
+            return False, "Sin configuracion de MongoDB"
+        total = collection.count_documents({})
+        return True, f"{total} producto(s) disponibles"
+    except Exception as exc:
+        return False, str(exc)[:120]
+
+
+def check_redis_available() -> tuple[bool, str]:
+    client = get_redis_client()
+    if client is None:
+        return False, "Sin conexion Redis"
+    try:
+        client.ping()
+        return True, "PING correcto"
+    except Exception as exc:
+        return False, str(exc)[:120]
+
+
+def build_availability_results(product_source: str, order_source: str) -> list[dict]:
+    timestamp = datetime.now(ZoneInfo("America/Lima")).strftime("%d/%m/%Y %H:%M:%S")
+    auth_ok, auth_detail = check_supabase_auth_available()
+    mongo_ok, mongo_detail = check_mongodb_available()
+    redis_ok, redis_detail = check_redis_available()
+    checks = [
+        ("PD-01", "Disponibilidad de la aplicacion", "Streamlit Cloud", True, "Aplicacion cargada correctamente"),
+        ("PD-02", "Disponibilidad de autenticacion", "Supabase Auth", auth_ok, auth_detail),
+        (
+            "PD-03",
+            "Disponibilidad de pedidos",
+            "Supabase PostgreSQL",
+            order_source == "supabase",
+            "Consultas de pedidos exitosas" if order_source == "supabase" else "Consulta de pedidos no disponible",
+        ),
+        (
+            "PD-04",
+            "Disponibilidad de catalogo",
+            "MongoDB Atlas",
+            mongo_ok and product_source not in {"sin_conexion", "mongodb_vacio"},
+            mongo_detail,
+        ),
+        ("PD-05", "Disponibilidad de carrito/cache", "Upstash Redis", redis_ok, redis_detail),
+    ]
+    return [
+        {
+            "codigo": code,
+            "metrica": metric,
+            "servicio": service,
+            "estado": "Disponible" if ok else "No disponible",
+            "detalle": detail,
+            "fecha_lima": timestamp,
+        }
+        for code, metric, service, ok, detail in checks
+    ]
+
+
+def render_availability_tests(product_source: str, order_source: str) -> None:
+    st.divider()
+    st.markdown("**Pruebas de disponibilidad cloud**")
+    st.caption("Verifica si los servicios principales responden durante la sesion actual.")
+
+    if st.button("Ejecutar pruebas de disponibilidad", use_container_width=True):
+        st.session_state.availability_results = build_availability_results(product_source, order_source)
+
+    results = st.session_state.get("availability_results", [])
+    if not results:
+        st.info("Ejecuta la prueba para generar la tabla de disponibilidad.")
+        return
+
+    availability_df = pd.DataFrame(results)
+    st.dataframe(availability_df, use_container_width=True, hide_index=True)
+    csv = availability_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Descargar disponibilidad CSV",
+        data=csv,
+        file_name="metricas_disponibilidad.csv",
         mime="text/csv",
     )
 
@@ -2210,6 +2312,7 @@ def render_data_tools(product_source: str, order_source: str) -> None:
         st.info("Redis no esta configurado. El carrito se conserva solo en la sesion activa.")
 
     render_performance_metrics()
+    render_availability_tests(product_source, order_source)
 
 
 def main() -> None:
