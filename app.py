@@ -206,6 +206,7 @@ def init_state() -> None:
     st.session_state.setdefault("order_status_snapshot", {})
     st.session_state.setdefault("performance_metrics", {})
     st.session_state.setdefault("availability_results", [])
+    st.session_state.setdefault("scalability_results", [])
 
 
 def record_performance_metric(code: str, metric: str, seconds: float, source: str, result: str = "Correcto") -> None:
@@ -348,6 +349,189 @@ def render_availability_tests(product_source: str, order_source: str) -> None:
         "Descargar disponibilidad CSV",
         data=csv,
         file_name="metricas_disponibilidad.csv",
+        mime="text/csv",
+    )
+
+
+def redis_scalability_operation(iteration: int) -> tuple[bool, float, str]:
+    client = get_redis_client()
+    if client is None:
+        return False, 0, "Sin conexion Redis"
+
+    test_key = f"test:scalability:{current_profile().get('id', 'user')}:{iteration}:{uuid4().hex[:8]}"
+    payload = json.dumps({"iteration": iteration, "fecha": now_iso()})
+    start = time.perf_counter()
+    try:
+        client.setex(test_key, 60, payload)
+        stored = client.get(test_key)
+        client.delete(test_key)
+        elapsed = time.perf_counter() - start
+        return stored == payload, elapsed, "SET/GET/DELETE correcto"
+    except Exception as exc:
+        elapsed = time.perf_counter() - start
+        return False, elapsed, str(exc)[:120]
+
+
+def run_scalability_tests(iterations: int) -> list[dict]:
+    timestamp = datetime.now(ZoneInfo("America/Lima")).strftime("%d/%m/%Y %H:%M:%S")
+    order_times = []
+    catalog_times = []
+    redis_times = []
+    order_success = 0
+    catalog_success = 0
+    redis_success = 0
+    errors = 0
+    last_order_count = 0
+    last_product_count = 0
+    redis_detail = ""
+
+    for index in range(iterations):
+        start = time.perf_counter()
+        try:
+            orders, source = load_orders()
+            elapsed = time.perf_counter() - start
+            order_times.append(elapsed)
+            last_order_count = len(orders)
+            if source == "supabase":
+                order_success += 1
+            else:
+                errors += 1
+        except Exception:
+            order_times.append(time.perf_counter() - start)
+            errors += 1
+
+        start = time.perf_counter()
+        try:
+            products, source = load_products()
+            elapsed = time.perf_counter() - start
+            catalog_times.append(elapsed)
+            last_product_count = len(products)
+            if source not in {"sin_conexion", "mongodb_vacio"}:
+                catalog_success += 1
+            else:
+                errors += 1
+        except Exception:
+            catalog_times.append(time.perf_counter() - start)
+            errors += 1
+
+        redis_ok, redis_elapsed, redis_detail = redis_scalability_operation(index + 1)
+        redis_times.append(redis_elapsed)
+        if redis_ok:
+            redis_success += 1
+        else:
+            errors += 1
+
+    def avg(values: list[float]) -> float:
+        return round(sum(values) / len(values), 4) if values else 0
+
+    def rate(success: int) -> str:
+        return f"{(success / iterations * 100):.0f}%" if iterations else "0%"
+
+    return [
+        {
+            "codigo": "PE-01",
+            "metrica": "Consultas consecutivas de pedidos",
+            "servicio": "Supabase PostgreSQL",
+            "valor_obtenido": f"{order_success}/{iterations}",
+            "resultado": rate(order_success),
+            "criterio": "100% exitosas",
+            "detalle": f"{last_order_count} pedido(s) en ultima consulta",
+            "fecha_lima": timestamp,
+        },
+        {
+            "codigo": "PE-02",
+            "metrica": "Tiempo promedio de consulta de pedidos",
+            "servicio": "Supabase PostgreSQL",
+            "valor_obtenido": f"{avg(order_times)} s",
+            "resultado": "Cumple" if avg(order_times) < 5 else "No cumple",
+            "criterio": "Menor a 5 segundos",
+            "detalle": f"{iterations} iteracion(es)",
+            "fecha_lima": timestamp,
+        },
+        {
+            "codigo": "PE-03",
+            "metrica": "Consultas consecutivas de catalogo",
+            "servicio": "MongoDB Atlas / Upstash Redis",
+            "valor_obtenido": f"{catalog_success}/{iterations}",
+            "resultado": rate(catalog_success),
+            "criterio": "100% exitosas",
+            "detalle": f"{last_product_count} producto(s) en ultima consulta",
+            "fecha_lima": timestamp,
+        },
+        {
+            "codigo": "PE-04",
+            "metrica": "Tiempo promedio de carga de catalogo",
+            "servicio": "MongoDB Atlas / Upstash Redis",
+            "valor_obtenido": f"{avg(catalog_times)} s",
+            "resultado": "Cumple" if avg(catalog_times) < 5 else "No cumple",
+            "criterio": "Menor a 5 segundos",
+            "detalle": f"{iterations} iteracion(es)",
+            "fecha_lima": timestamp,
+        },
+        {
+            "codigo": "PE-05",
+            "metrica": "Operaciones temporales de cache",
+            "servicio": "Upstash Redis",
+            "valor_obtenido": f"{redis_success}/{iterations}",
+            "resultado": rate(redis_success),
+            "criterio": "100% exitosas",
+            "detalle": redis_detail,
+            "fecha_lima": timestamp,
+        },
+        {
+            "codigo": "PE-06",
+            "metrica": "Tiempo promedio de operacion Redis",
+            "servicio": "Upstash Redis",
+            "valor_obtenido": f"{avg(redis_times)} s",
+            "resultado": "Cumple" if avg(redis_times) < 2 else "No cumple",
+            "criterio": "Menor a 2 segundos",
+            "detalle": "SET/GET/DELETE por iteracion",
+            "fecha_lima": timestamp,
+        },
+        {
+            "codigo": "PE-07",
+            "metrica": "Errores durante la prueba controlada",
+            "servicio": "Servicios cloud integrados",
+            "valor_obtenido": str(errors),
+            "resultado": "Cumple" if errors == 0 else "No cumple",
+            "criterio": "0 errores",
+            "detalle": f"{iterations} iteracion(es) por servicio",
+            "fecha_lima": timestamp,
+        },
+    ]
+
+
+def render_scalability_tests() -> None:
+    st.divider()
+    st.markdown("**Pruebas de escalabilidad controlada**")
+    st.caption(
+        "Ejecuta iteraciones repetidas contra Supabase, MongoDB/Redis y Redis sin crear pedidos reales ni alterar stock."
+    )
+
+    iterations = st.number_input(
+        "Cantidad de iteraciones por servicio",
+        min_value=5,
+        max_value=50,
+        value=10,
+        step=5,
+    )
+
+    if st.button("Ejecutar pruebas de escalabilidad", use_container_width=True):
+        with st.spinner("Ejecutando pruebas controladas..."):
+            st.session_state.scalability_results = run_scalability_tests(int(iterations))
+
+    results = st.session_state.get("scalability_results", [])
+    if not results:
+        st.info("Ejecuta la prueba para generar la tabla de escalabilidad.")
+        return
+
+    scalability_df = pd.DataFrame(results)
+    st.dataframe(scalability_df, use_container_width=True, hide_index=True)
+    csv = scalability_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Descargar escalabilidad CSV",
+        data=csv,
+        file_name="metricas_escalabilidad.csv",
         mime="text/csv",
     )
 
@@ -2313,6 +2497,7 @@ def render_data_tools(product_source: str, order_source: str) -> None:
 
     render_performance_metrics()
     render_availability_tests(product_source, order_source)
+    render_scalability_tests()
 
 
 def main() -> None:
