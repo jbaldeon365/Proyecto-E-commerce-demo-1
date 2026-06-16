@@ -374,128 +374,192 @@ def redis_scalability_operation(iteration: int) -> tuple[bool, float, str]:
 
 def run_scalability_tests(iterations: int) -> list[dict]:
     timestamp = datetime.now(ZoneInfo("America/Lima")).strftime("%d/%m/%Y %H:%M:%S")
+    productos, product_source = load_products()
+    collection = get_mongo_collection()
+    candidates = [producto for producto in productos if int(producto.get("stock", 0)) >= iterations]
+    selected = max(candidates, key=lambda item: int(item.get("stock", 0)), default=None)
+
+    if selected is None or collection is None or not has_supabase_config():
+        return [
+            {
+                "codigo": "PE-00",
+                "metrica": "Preparacion de prueba de lote",
+                "servicio": "Servicios cloud integrados",
+                "valor_obtenido": "No ejecutado",
+                "resultado": "No cumple",
+                "criterio": "Producto con stock suficiente y conexiones activas",
+                "detalle": "No hay producto con stock suficiente o falta conexion cloud.",
+                "fecha_lima": timestamp,
+            }
+        ]
+
+    pid = product_id(selected)
+    product_snapshot = collection.find_one({"_id": pid}, {"stock": 1, "nombre": 1})
+    initial_stock = int((product_snapshot or {}).get("stock", selected.get("stock", 0)))
+    created_codes = []
+    created_order_ids = []
     order_times = []
-    catalog_times = []
-    redis_times = []
-    order_success = 0
-    catalog_success = 0
-    redis_success = 0
-    errors = 0
-    last_order_count = 0
-    last_product_count = 0
-    redis_detail = ""
+    insertion_errors = 0
+    detail_matches = 0
+    mongo_errors = 0
+    batch_id = datetime.now(ZoneInfo("America/Lima")).strftime("%Y%m%d%H%M%S")
 
     for index in range(iterations):
+        cliente = {
+            "nombre": "Cliente Escalabilidad",
+            "email": f"escalabilidad.{batch_id}@test.local",
+            "telefono": "999999999",
+            "direccion": "Av Prueba Cloud 123 Lima",
+        }
+        items = [
+            {
+                "producto_id": pid,
+                "nombre": selected["nombre"],
+                "categoria": selected["categoria"],
+                "precio": float(selected["precio"]),
+                "cantidad": 1,
+                "subtotal": float(selected["precio"]),
+            }
+        ]
+        payment = simulate_payment("Yape", "Aprobado")
         start = time.perf_counter()
         try:
-            orders, source = load_orders()
-            elapsed = time.perf_counter() - start
-            order_times.append(elapsed)
-            last_order_count = len(orders)
-            if source == "supabase":
-                order_success += 1
-            else:
-                errors += 1
+            codigo = create_order(cliente, items, payment)
+            order_times.append(time.perf_counter() - start)
+            created_codes.append(codigo)
+            pedidos = supabase_request("GET", "pedidos", params={"select": "id", "codigo": f"eq.{codigo}", "limit": 1})
+            if pedidos:
+                pedido_id = pedidos[0]["id"]
+                created_order_ids.append(pedido_id)
+                detalles = supabase_request(
+                    "GET",
+                    "detalle_pedidos",
+                    params={"select": "id", "pedido_id": f"eq.{pedido_id}", "producto_id": f"eq.{pid}"},
+                )
+                if len(detalles) == 1:
+                    detail_matches += 1
         except Exception:
             order_times.append(time.perf_counter() - start)
-            errors += 1
+            insertion_errors += 1
 
-        start = time.perf_counter()
+    final_snapshot = collection.find_one({"_id": pid}, {"stock": 1, "nombre": 1})
+    final_stock = int((final_snapshot or {}).get("stock", initial_stock))
+    expected_stock = initial_stock - len(created_codes)
+    stock_difference = expected_stock - final_stock
+    if product_source in {"sin_conexion", "mongodb_vacio"}:
+        mongo_errors += 1
+
+    redis_ok, redis_elapsed, redis_detail = redis_scalability_operation(iterations)
+    cart_mix_errors = 0
+    redis_ops_ok = redis_ok
+    client = get_redis_client()
+    if client is None:
+        cart_mix_errors = 1
+        redis_ops_ok = False
+    else:
+        key_a = f"test:cart:A:{batch_id}"
+        key_b = f"test:cart:B:{batch_id}"
+        cart_a = json.dumps({pid: 1})
+        cart_b = json.dumps({pid: 2})
         try:
-            products, source = load_products()
-            elapsed = time.perf_counter() - start
-            catalog_times.append(elapsed)
-            last_product_count = len(products)
-            if source not in {"sin_conexion", "mongodb_vacio"}:
-                catalog_success += 1
-            else:
-                errors += 1
-        except Exception:
-            catalog_times.append(time.perf_counter() - start)
-            errors += 1
-
-        redis_ok, redis_elapsed, redis_detail = redis_scalability_operation(index + 1)
-        redis_times.append(redis_elapsed)
-        if redis_ok:
-            redis_success += 1
-        else:
-            errors += 1
+            client.setex(key_a, 60, cart_a)
+            client.setex(key_b, 60, cart_b)
+            stored_a = client.get(key_a)
+            stored_b = client.get(key_b)
+            cart_mix_errors = 0 if stored_a == cart_a and stored_b == cart_b else 1
+            client.delete(key_a)
+            client.delete(key_b)
+        except Exception as exc:
+            cart_mix_errors = 1
+            redis_ops_ok = False
+            redis_detail = str(exc)[:120]
 
     def avg(values: list[float]) -> float:
         return round(sum(values) / len(values), 4) if values else 0
 
-    def rate(success: int) -> str:
-        return f"{(success / iterations * 100):.0f}%" if iterations else "0%"
+    inserted = len(created_codes)
+    insertion_rate = (inserted / iterations * 100) if iterations else 0
+    detail_rate = (detail_matches / inserted * 100) if inserted else 0
 
     return [
         {
             "codigo": "PE-01",
-            "metrica": "Consultas consecutivas de pedidos",
+            "metrica": "Pedidos generados por lote",
             "servicio": "Supabase PostgreSQL",
-            "valor_obtenido": f"{order_success}/{iterations}",
-            "resultado": rate(order_success),
-            "criterio": "100% exitosas",
-            "detalle": f"{last_order_count} pedido(s) en ultima consulta",
+            "valor_obtenido": f"{inserted}/{iterations}",
+            "resultado": f"{insertion_rate:.0f}%",
+            "criterio": "100% de pedidos insertados",
+            "detalle": f"Lote {batch_id}. Producto: {selected['nombre']}",
             "fecha_lima": timestamp,
         },
         {
             "codigo": "PE-02",
-            "metrica": "Tiempo promedio de consulta de pedidos",
-            "servicio": "Supabase PostgreSQL",
+            "metrica": "Tiempo promedio de generacion de pedido",
+            "servicio": "Streamlit Cloud + Supabase",
             "valor_obtenido": f"{avg(order_times)} s",
             "resultado": "Cumple" if avg(order_times) < 5 else "No cumple",
             "criterio": "Menor a 5 segundos",
-            "detalle": f"{iterations} iteracion(es)",
+            "detalle": f"{inserted} pedido(s) generados",
             "fecha_lima": timestamp,
         },
         {
             "codigo": "PE-03",
-            "metrica": "Consultas consecutivas de catalogo",
-            "servicio": "MongoDB Atlas / Upstash Redis",
-            "valor_obtenido": f"{catalog_success}/{iterations}",
-            "resultado": rate(catalog_success),
-            "criterio": "100% exitosas",
-            "detalle": f"{last_product_count} producto(s) en ultima consulta",
+            "metrica": "Errores de insercion",
+            "servicio": "Supabase PostgreSQL",
+            "valor_obtenido": str(insertion_errors),
+            "resultado": "Cumple" if insertion_errors == 0 else "No cumple",
+            "criterio": "0 errores",
+            "detalle": f"{iterations} intento(s) de compra",
             "fecha_lima": timestamp,
         },
         {
             "codigo": "PE-04",
-            "metrica": "Tiempo promedio de carga de catalogo",
-            "servicio": "MongoDB Atlas / Upstash Redis",
-            "valor_obtenido": f"{avg(catalog_times)} s",
-            "resultado": "Cumple" if avg(catalog_times) < 5 else "No cumple",
-            "criterio": "Menor a 5 segundos",
-            "detalle": f"{iterations} iteracion(es)",
+            "metrica": "Detalles registrados por pedido",
+            "servicio": "Supabase PostgreSQL",
+            "valor_obtenido": f"{detail_matches}/{inserted}",
+            "resultado": f"{detail_rate:.0f}%",
+            "criterio": "100% de coincidencia",
+            "detalle": f"{len(created_order_ids)} pedido(s) consultados por codigo",
             "fecha_lima": timestamp,
         },
         {
             "codigo": "PE-05",
-            "metrica": "Operaciones temporales de cache",
-            "servicio": "Upstash Redis",
-            "valor_obtenido": f"{redis_success}/{iterations}",
-            "resultado": rate(redis_success),
-            "criterio": "100% exitosas",
-            "detalle": redis_detail,
+            "metrica": "Consistencia de stock",
+            "servicio": "MongoDB Atlas",
+            "valor_obtenido": str(stock_difference),
+            "resultado": "Cumple" if stock_difference == 0 else "No cumple",
+            "criterio": "Diferencia igual a 0",
+            "detalle": f"Inicial {initial_stock}, esperado {expected_stock}, final {final_stock}",
             "fecha_lima": timestamp,
         },
         {
             "codigo": "PE-06",
-            "metrica": "Tiempo promedio de operacion Redis",
+            "metrica": "Persistencia de carritos concurrentes",
             "servicio": "Upstash Redis",
-            "valor_obtenido": f"{avg(redis_times)} s",
-            "resultado": "Cumple" if avg(redis_times) < 2 else "No cumple",
-            "criterio": "Menor a 2 segundos",
-            "detalle": "SET/GET/DELETE por iteracion",
+            "valor_obtenido": str(cart_mix_errors),
+            "resultado": "Cumple" if cart_mix_errors == 0 else "No cumple",
+            "criterio": "0 carritos mezclados",
+            "detalle": "Se validaron dos claves de carrito independientes",
             "fecha_lima": timestamp,
         },
         {
             "codigo": "PE-07",
-            "metrica": "Errores durante la prueba controlada",
-            "servicio": "Servicios cloud integrados",
-            "valor_obtenido": str(errors),
-            "resultado": "Cumple" if errors == 0 else "No cumple",
-            "criterio": "0 errores",
-            "detalle": f"{iterations} iteracion(es) por servicio",
+            "metrica": "Operaciones en MongoDB Atlas",
+            "servicio": "MongoDB Atlas",
+            "valor_obtenido": str(mongo_errors),
+            "resultado": "Cumple" if mongo_errors == 0 else "No cumple",
+            "criterio": "Sin caida abrupta ni errores",
+            "detalle": "Lectura inicial, descuento de stock y lectura final",
+            "fecha_lima": timestamp,
+        },
+        {
+            "codigo": "PE-08",
+            "metrica": "Operaciones en Redis",
+            "servicio": "Upstash Redis",
+            "valor_obtenido": "Activo" if redis_ops_ok else "Error",
+            "resultado": "Cumple" if redis_ops_ok else "No cumple",
+            "criterio": "Servicio activo y sin errores",
+            "detalle": f"{redis_detail}; tiempo {round(redis_elapsed, 4)} s",
             "fecha_lima": timestamp,
         },
     ]
@@ -503,21 +567,27 @@ def run_scalability_tests(iterations: int) -> list[dict]:
 
 def render_scalability_tests() -> None:
     st.divider()
-    st.markdown("**Pruebas de escalabilidad controlada**")
+    st.markdown("**Pruebas de escalabilidad por lote de compras**")
     st.caption(
-        "Ejecuta iteraciones repetidas contra Supabase, MongoDB/Redis y Redis sin crear pedidos reales ni alterar stock."
+        "Crea pedidos de prueba identificables, valida detalle, stock en MongoDB y carritos temporales en Redis."
     )
 
-    iterations = st.number_input(
-        "Cantidad de iteraciones por servicio",
-        min_value=5,
-        max_value=50,
-        value=10,
-        step=5,
+    scenarios = {
+        "E1 - Carga baja operativa (10 compras)": 10,
+        "E2 - Carga media promocional (25 compras)": 25,
+        "E3 - Carga alta controlada tipo Cyber Wow (50 compras)": 50,
+    }
+    selected_scenario = st.selectbox(
+        "Escenario de prueba",
+        list(scenarios.keys()),
+    )
+    iterations = scenarios[selected_scenario]
+    st.info(
+        f"Este escenario ejecutara {iterations} compras de prueba y validara las metricas PE-01 a PE-08."
     )
 
     if st.button("Ejecutar pruebas de escalabilidad", use_container_width=True):
-        with st.spinner("Ejecutando pruebas controladas..."):
+        with st.spinner("Ejecutando lote de compras de prueba..."):
             st.session_state.scalability_results = run_scalability_tests(int(iterations))
 
     results = st.session_state.get("scalability_results", [])
