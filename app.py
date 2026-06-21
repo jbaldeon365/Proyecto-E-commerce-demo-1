@@ -268,6 +268,10 @@ def sanitize_expiry(value: str) -> str:
     return f"{digits[:2]}/{digits[2:]}"
 
 
+def sanitize_session_field(key: str, sanitizer) -> None:
+    st.session_state[key] = sanitizer(st.session_state.get(key, ""))
+
+
 def validate_name(value: str, label: str = "nombre") -> list[str]:
     if not value:
         return [f"Ingresa {label}."]
@@ -757,6 +761,17 @@ def reset_payment_gateway() -> None:
     st.session_state.payment_details = {}
     st.session_state.simulate_payment_rejection = False
     st.session_state.checkout_step = "cart"
+    for key in [
+        "payment_input_method",
+        "payment_card_holder",
+        "payment_card_number",
+        "payment_expiry",
+        "payment_cvv",
+        "payment_document",
+        "payment_yape_phone",
+        "payment_approval_code",
+    ]:
+        st.session_state.pop(key, None)
 
 
 def close_order_confirmation() -> None:
@@ -860,36 +875,61 @@ def payment_gateway_content() -> None:
         details = st.session_state.payment_details
         st.markdown(f"**Paso 2 de 3: datos de pago - {method}**")
 
+        if st.session_state.get("payment_input_method") != method:
+            st.session_state.payment_input_method = method
+            st.session_state.payment_card_holder = sanitize_name(details.get("card_holder", customer.get("nombre", "")))
+            st.session_state.payment_card_number = only_digits(details.get("card_number", ""), 19)
+            st.session_state.payment_expiry = sanitize_expiry(details.get("expiry", ""))
+            st.session_state.payment_cvv = only_digits(details.get("cvv", ""), 4)
+            st.session_state.payment_document = only_digits(details.get("document", ""), 8)
+            st.session_state.payment_yape_phone = only_digits(details.get("phone", ""), 9)
+            st.session_state.payment_approval_code = only_digits(details.get("approval_code", ""), 12)
+
         if method == "Tarjeta":
-            details["card_holder"] = sanitize_name(st.text_input(
+            st.text_input(
                 "Titular de la tarjeta",
-                value=sanitize_name(details.get("card_holder", customer.get("nombre", ""))),
-            ))
-            details["card_number"] = only_digits(st.text_input(
+                key="payment_card_holder",
+                on_change=sanitize_session_field,
+                args=("payment_card_holder", sanitize_name),
+            )
+            st.text_input(
                 "Numero de tarjeta",
-                value=only_digits(details.get("card_number", ""), 19),
+                key="payment_card_number",
                 placeholder="4111111111111111",
                 max_chars=19,
-            ), 19)
+                on_change=sanitize_session_field,
+                args=("payment_card_number", lambda value: only_digits(value, 19)),
+            )
             col_a, col_b = st.columns(2)
-            details["expiry"] = sanitize_expiry(col_a.text_input(
+            col_a.text_input(
                 "Vencimiento (MM/AA)",
-                value=sanitize_expiry(details.get("expiry", "")),
+                key="payment_expiry",
                 placeholder="MMAA",
                 max_chars=5,
-            ))
-            details["cvv"] = only_digits(col_b.text_input(
+                on_change=sanitize_session_field,
+                args=("payment_expiry", sanitize_expiry),
+            )
+            col_b.text_input(
                 "CVV",
-                value=only_digits(details.get("cvv", ""), 4),
+                key="payment_cvv",
                 type="password",
                 max_chars=4,
-            ), 4)
-            details["document"] = only_digits(st.text_input(
+                on_change=sanitize_session_field,
+                args=("payment_cvv", lambda value: only_digits(value, 4)),
+            )
+            st.text_input(
                 "DNI del titular",
-                value=only_digits(details.get("document", ""), 8),
+                key="payment_document",
                 placeholder="12345678",
                 max_chars=8,
-            ), 8)
+                on_change=sanitize_session_field,
+                args=("payment_document", lambda value: only_digits(value, 8)),
+            )
+            details["card_holder"] = sanitize_name(st.session_state.get("payment_card_holder", ""))
+            details["card_number"] = only_digits(st.session_state.get("payment_card_number", ""), 19)
+            details["expiry"] = sanitize_expiry(st.session_state.get("payment_expiry", ""))
+            details["cvv"] = only_digits(st.session_state.get("payment_cvv", ""), 4)
+            details["document"] = only_digits(st.session_state.get("payment_document", ""), 8)
             details["installments"] = st.selectbox(
                 "Cuotas",
                 ["1 cuota", "3 cuotas", "6 cuotas", "12 cuotas"],
@@ -898,18 +938,24 @@ def payment_gateway_content() -> None:
                 ),
             )
         else:
-            details["phone"] = st.text_input(
+            st.text_input(
                 "Numero de celular Yape",
-                value=only_digits(details.get("phone", ""), 9),
+                key="payment_yape_phone",
                 placeholder="999888777",
                 max_chars=9,
+                on_change=sanitize_session_field,
+                args=("payment_yape_phone", lambda value: only_digits(value, 9)),
             )
-            details["approval_code"] = st.text_input(
+            st.text_input(
                 "Numero de aprobacion",
-                value=only_digits(details.get("approval_code", ""), 12),
+                key="payment_approval_code",
                 placeholder="123456",
                 max_chars=12,
+                on_change=sanitize_session_field,
+                args=("payment_approval_code", lambda value: only_digits(value, 12)),
             )
+            details["phone"] = only_digits(st.session_state.get("payment_yape_phone", ""), 9)
+            details["approval_code"] = only_digits(st.session_state.get("payment_approval_code", ""), 12)
 
         st.session_state.payment_details = details
 
@@ -1640,6 +1686,7 @@ def render_cart(productos: list[dict]) -> None:
             st.session_state.checkout_items = items
             st.session_state.payment_step = 1
             st.session_state.payment_details = {}
+            st.session_state.payment_input_method = ""
             st.session_state.simulate_payment_rejection = False
             st.session_state.show_order_confirmation = False
             st.session_state.order_confirmation = {}
