@@ -833,7 +833,7 @@ def payment_gateway_content() -> None:
         return
 
     st.metric("Monto total a pagar", money(total))
-    st.caption("Pasarela simulada para validar el flujo de checkout antes de generar el pedido.")
+    st.caption("Pasarela de pago para validar el flujo de checkout antes de generar el pedido.")
 
     if step == 1:
         st.markdown("**Paso 1 de 3: selecciona el metodo de pago**")
@@ -942,17 +942,12 @@ def payment_gateway_content() -> None:
             st.write(f"Celular Yape: {details.get('phone', '')}")
             st.write(f"Nro. aprobacion: {details.get('approval_code', '')}")
 
-        st.session_state.simulate_payment_rejection = st.checkbox(
-            "Simular rechazo de la pasarela para pruebas",
-            value=st.session_state.simulate_payment_rejection,
-        )
-
         col1, col2 = st.columns(2)
         if col1.button("Atras", use_container_width=True):
             st.session_state.payment_step = 2
             st.rerun()
         if col2.button("Confirmar pago", type="primary", use_container_width=True):
-            status = "Rechazado" if st.session_state.simulate_payment_rejection else "Aprobado"
+            status = "Aprobado"
             payment = simulate_payment(method, status)
             try:
                 codigo = create_order(customer, items, payment)
@@ -1019,7 +1014,7 @@ def render_order_confirmation() -> None:
 def render_payment_gateway() -> None:
     dialog = getattr(st, "dialog", None) or getattr(st, "experimental_dialog", None)
     if dialog:
-        dialog("Pasarela de pago simulada")(payment_gateway_content)()
+        dialog("Pasarela de pago")(payment_gateway_content)()
     else:
         with st.container(border=True):
             payment_gateway_content()
@@ -1187,7 +1182,7 @@ def create_order(cliente: dict, items: list[dict], payment: dict) -> str:
     total = cart_total(items)
     if payment.get("estado_pago") != "Aprobado":
         record_payment_attempt(cliente, payment, total)
-        raise RuntimeError("El pago fue rechazado por la pasarela simulada. No se genero el pedido.")
+        raise RuntimeError("El pago fue rechazado por la pasarela. No se genero el pedido.")
     stock_errors = validate_cart_stock(items)
     if stock_errors:
         raise RuntimeError(" ".join(stock_errors))
