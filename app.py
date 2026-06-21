@@ -185,6 +185,23 @@ def supabase_auth_request(endpoint: str, payload: dict) -> dict:
         raise RuntimeError(f"Supabase Auth rechazo la solicitud. Detalle: {detail}") from exc
     return response.json()
 
+def user_friendly_auth_error(exc: Exception, action: str) -> str:
+    detail = str(exc).lower()
+    if "invalid_credentials" in detail or "invalid login credentials" in detail:
+        return "Correo o contrasena incorrectos. Revisa tus datos e intenta nuevamente."
+    if "email_not_confirmed" in detail:
+        return "Tu correo aun no ha sido confirmado. Revisa tu bandeja de entrada antes de iniciar sesion."
+    if "user_already_exists" in detail or "already registered" in detail:
+        return "Este correo ya tiene una cuenta registrada. Inicia sesion o usa otro correo."
+    if "email_provider_disabled" in detail or "email signups are disabled" in detail:
+        return "El registro con correo no esta disponible por el momento. Contacta al administrador."
+    if "over_email_send_rate_limit" in detail or "email rate limit exceeded" in detail:
+        return "Se enviaron demasiadas solicitudes. Espera unos minutos e intenta nuevamente."
+    if "password" in detail and "weak" in detail:
+        return "La contrasena no cumple los requisitos de seguridad. Usa una contrasena mas segura."
+    if action == "login":
+        return "No se pudo iniciar sesion. Verifica tus datos e intenta nuevamente."
+    return "No se pudo crear la cuenta. Verifica tus datos e intenta nuevamente."
 
 def init_state() -> None:
     st.session_state.setdefault("cart", {})
@@ -1756,7 +1773,7 @@ def render_auth_page() -> None:
                 st.success("Sesion iniciada.")
                 st.rerun()
             except Exception as exc:
-                st.error(f"No se pudo iniciar sesion. {exc}")
+                st.error(user_friendly_auth_error(exc, "login"))
 
     with tab_register:
         with st.form("register_form"):
@@ -1783,7 +1800,7 @@ def render_auth_page() -> None:
                 st.success("Cuenta creada.")
                 st.rerun()
             except Exception as exc:
-                st.error(f"No se pudo crear la cuenta. {exc}")
+                st.error(user_friendly_auth_error(exc, "register"))
 
 
 def render_catalog(productos: list[dict]) -> None:
@@ -2649,3 +2666,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
