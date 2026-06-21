@@ -780,7 +780,7 @@ def validate_payment_details(method: str, details: dict) -> list[str]:
         card_holder = sanitize_name(details.get("card_holder", ""))
         card_number = only_digits(details.get("card_number", ""), 19)
         cvv = only_digits(details.get("cvv", ""), 4)
-        document = only_digits(details.get("document", ""), 12)
+        document = only_digits(details.get("document", ""), 8)
         expiry = sanitize_expiry(details.get("expiry", ""))
         errors.extend(validate_name(card_holder, "nombre del titular"))
         if len(card_number) < 13 or len(card_number) > 19:
@@ -789,8 +789,8 @@ def validate_payment_details(method: str, details: dict) -> list[str]:
             errors.append("Ingresa la fecha de vencimiento en formato MM/AA.")
         if len(cvv) not in [3, 4]:
             errors.append("Ingresa un CVV valido.")
-        if len(document) < 8:
-            errors.append("Ingresa un documento valido del titular.")
+        if len(document) != 8:
+            errors.append("Ingresa un DNI valido de 8 digitos.")
     elif method == "Yape":
         phone = only_digits(details.get("phone", ""), 9)
         approval_code = only_digits(details.get("approval_code", ""), 12)
@@ -810,7 +810,7 @@ def normalize_payment_details(method: str, details: dict) -> dict:
             "card_number": only_digits(details.get("card_number", ""), 19),
             "expiry": sanitize_expiry(details.get("expiry", "")),
             "cvv": only_digits(details.get("cvv", ""), 4),
-            "document": only_digits(details.get("document", ""), 12),
+            "document": only_digits(details.get("document", ""), 8),
             "installments": details.get("installments", "1 cuota"),
         }
         return normalized
@@ -861,35 +861,35 @@ def payment_gateway_content() -> None:
         st.markdown(f"**Paso 2 de 3: datos de pago - {method}**")
 
         if method == "Tarjeta":
-            details["card_holder"] = st.text_input(
+            details["card_holder"] = sanitize_name(st.text_input(
                 "Titular de la tarjeta",
                 value=sanitize_name(details.get("card_holder", customer.get("nombre", ""))),
-            )
-            details["card_number"] = st.text_input(
+            ))
+            details["card_number"] = only_digits(st.text_input(
                 "Numero de tarjeta",
                 value=only_digits(details.get("card_number", ""), 19),
-                placeholder="4111 1111 1111 1111",
+                placeholder="4111111111111111",
                 max_chars=19,
-            )
+            ), 19)
             col_a, col_b = st.columns(2)
-            details["expiry"] = col_a.text_input(
-                "Vencimiento",
+            details["expiry"] = sanitize_expiry(col_a.text_input(
+                "Vencimiento (MM/AA)",
                 value=sanitize_expiry(details.get("expiry", "")),
-                placeholder="MM/AA",
+                placeholder="MMAA",
                 max_chars=5,
-            )
-            details["cvv"] = col_b.text_input(
+            ))
+            details["cvv"] = only_digits(col_b.text_input(
                 "CVV",
                 value=only_digits(details.get("cvv", ""), 4),
                 type="password",
                 max_chars=4,
-            )
-            details["document"] = st.text_input(
-                "Documento del titular",
-                value=only_digits(details.get("document", ""), 12),
-                placeholder="DNI o CE",
-                max_chars=12,
-            )
+            ), 4)
+            details["document"] = only_digits(st.text_input(
+                "DNI del titular",
+                value=only_digits(details.get("document", ""), 8),
+                placeholder="12345678",
+                max_chars=8,
+            ), 8)
             details["installments"] = st.selectbox(
                 "Cuotas",
                 ["1 cuota", "3 cuotas", "6 cuotas", "12 cuotas"],
